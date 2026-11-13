@@ -31,7 +31,7 @@ const toasts: { msg: string; kind: string; node: number; until: number }[] = [];
 function startRun(g: Game) {
   app.g = g; app.screen = 'game'; app.sel = null; app.menu = null; app.mode = null; app.launch = null; app.paused = false; app.speed = 1;
   const h = g.nodes[g.home];
-  cam.x = h.x + 30; cam.y = h.y; cam.z = Math.max(2.6, Math.min(3.8, Math.min(W, H) / 130));
+  cam.x = h.x + 8; cam.y = h.y; cam.z = Math.max(6.5, Math.min(9, W / 52));
   lastLog = g.log.length; toasts.length = 0; dirty = true;
 }
 function save() { if (app.g && !app.g.result && app.screen === 'game') { store.set(SAVE, JSON.stringify(app.g)); app.hasSave = true; } }
@@ -216,7 +216,7 @@ canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel
 canvas.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015)); }, { passive: false });
 function zoomAt(px: number, py: number, k: number) {
   const before = toWorld(px, py);
-  cam.z = Math.max(1, Math.min(7, cam.z * k));
+  cam.z = Math.max(2.4, Math.min(13, cam.z * k));
   const after = toWorld(px, py);
   cam.x += before.x - after.x; cam.y += before.y - after.y;
 }

@@ -17,7 +17,8 @@ export interface RenderUi {
 export const TILT = 0.58;
 export const NEUTRAL = '#8f95a6', UNKNOWN = '#56617c';
 const PAPER = '#f1ead9', INK = '#1d2335';
-export const nodeR = (n: GNode) => (n.citadel ? 12 : n.kind === 'station' ? 8 : [6.5, 8.5, 11][n.size]);
+// Body radius in world units. Bodies are small next to the gaps between them, so a phone shows two or three at once.
+export const nodeR = (n: GNode) => (n.citadel ? 5 : n.kind === 'station' ? 3.3 : [2.7, 3.5, 4.5][n.size]);
 /** Screen point of a node's body centre (used for hit-testing). */
 export function bodyY(n: GNode, z: number) { return (n.kind === 'planet' ? 1.25 : 0.9) * nodeR(n) * z; }
 
@@ -184,7 +185,7 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
   for (const n of g.nodes) {
     const k = known(g, n);
     if (k.tier === 'hidden' || k.tier === 'detected' || k.owner === 0) continue;
-    const x = sx(n.x), y = sy(n.y), r = 44 * z;
+    const x = sx(n.x), y = sy(n.y), r = 30 * z;
     if (x < -r || y < -r || x > w + r || y > h + r) continue;
     const col = sideColor(g, k.owner);
     ctx.save(); ctx.translate(x, y); ctx.scale(1, TILT);
@@ -310,7 +311,7 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
       const glyph = n.home ? '⌂ ' : n.citadel ? '✦ ' : n.capital ? '♛ ' : '';
       flag(ctx, x + (n.kind === 'planet' ? 0 : r * 0.1), topY + (n.kind === 'planet' ? 3 : r * TILT * 0.4), col, glyph + (stale ? '~' : '') + k.drones, n.home || n.capital || n.citadel, stale, now, n.id);
     }
-    if (z > 1.9) names.push({ t: n.name.toUpperCase(), x, y: gy + baseR * TILT + 12, a: sil ? 0.4 : 0.8 });
+    if (z > 4.5) names.push({ t: n.name.toUpperCase(), x, y: gy + baseR * TILT + 12, a: sil ? 0.4 : 0.8 });
 
     // specialists stand in front as pawns; paper tags mark things worth knowing
     if (!sil) {
