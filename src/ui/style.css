@@ -1,6 +1,7 @@
 :root{--bg:#262e49;--card:#2b3350;--card2:#353e5e;--line:#4a5478;--ink:#f1ead9;--dim:#a9b0c6;--me:#6cc5a0;--gold:#e8bd55;--bad:#e2604e;--warn:#e8a85a;--good:#8fd0a6;--r:14px}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overscroll-behavior:none;user-select:none;-webkit-user-select:none}
+#gl{position:fixed;inset:0;width:100%;height:100%;display:block}
 #map{position:fixed;inset:0;width:100%;height:100%;touch-action:none;display:block}
 button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
 h1,h2,h3,h4,p{margin:0}

@@ -1,11 +1,13 @@
+import * as THREE from 'three';
 import type { Game, GNode, Ship } from '../sim/types';
 import { PLAYER } from '../sim/types';
-import { radii, sideColor, shipSeen, isDocked, canTarget, natMax } from '../sim/core';
+import { radii, sideColor, shipSeen, canTarget, natMax, docks } from '../sim/core';
 import { SPECS } from '../sim/content';
 
-// 2.5D diorama renderer. The world is a flat plane seen from above and behind (y is squashed by
-// TILT); every object stands on that plane and casts a shadow onto it. Shapes are flat-shaded with
-// hard edges and a small muted palette: bodies are neutral, ownership is carried by flags and roofs.
+// 3D diorama renderer. Low-poly, flat-shaded models stand above a misty plane and are lit by one
+// sun; a perspective camera looks down at an angle. A transparent 2D canvas on top carries only
+// what must stay crisp at any zoom: flags with garrison counts, names, tags and flight trails.
+// World (x, y) maps to scene (x, 0, z); scene y is up.
 
 export interface Cam { x: number; y: number; z: number }
 export interface RenderUi {
@@ -14,52 +16,19 @@ export interface RenderUi {
   targeting: boolean; from: number; hover: number;
 }
 
-export const TILT = 0.58;
+const PITCH = (52 * Math.PI) / 180, FOV = 30;
+export const TILT = Math.sin(PITCH); // ground foreshortening, used by input for panning
 export const NEUTRAL = '#8f95a6', UNKNOWN = '#56617c';
-const PAPER = '#f1ead9', INK = '#1d2335';
-// Body radius in world units. Bodies are small next to the gaps between them, so a phone shows two or three at once.
+const PAPER = '#f1ead9', INK = '#1d2335', HULL = '#e6dcc6';
 export const nodeR = (n: GNode) => (n.citadel ? 5 : n.kind === 'station' ? 3.3 : [2.7, 3.5, 4.5][n.size]);
-/** Screen point of a node's body centre (used for hit-testing). */
-export function bodyY(n: GNode, z: number) { return (n.kind === 'planet' ? 1.25 : 0.9) * nodeR(n) * z; }
+const bodyTop = (n: GNode) => { const r = nodeR(n); return n.kind === 'planet' ? r * 2.5 : r * 0.5 + r * (n.citadel ? 3.4 : 1.5); };
+const bodyMid = (n: GNode) => { const r = nodeR(n); return n.kind === 'planet' ? r * 1.5 : r * 0.5 + r * 0.55; };
 
 const TERRAIN = [
-  ['#d9c7a0', '#b09a74', '#efe2c2'], // sand
-  ['#93a5b3', '#6c7e8e', '#b9c7d0'], // slate
-  ['#93b08c', '#6d8b69', '#b7ceac'], // moss
-  ['#cc9379', '#a56e58', '#e3b7a2'], // rust
-  ['#cfdcdf', '#a2b5ba', '#eef5f5'], // ice
+  ['#d9c7a0', '#b09a74', '#efe2c2'], ['#93a5b3', '#6c7e8e', '#b9c7d0'], ['#93b08c', '#6d8b69', '#b7ceac'],
+  ['#cc9379', '#a56e58', '#e3b7a2'], ['#cfdcdf', '#a2b5ba', '#eef5f5'],
 ];
 
-let backdrop: HTMLCanvasElement | null = null, backdropSeed = -1;
-const stars: { x: number; y: number; r: number; d: number; a: number }[] = [];
-let fog: HTMLCanvasElement | null = null;
-
-function mkBackdrop(seed: number) {
-  const c = document.createElement('canvas');
-  c.width = 1024; c.height = 700;
-  const x = c.getContext('2d')!;
-  let s = seed | 0;
-  const r = () => { s = (s + 0x6d2b79f5) | 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-  const hues = ['#5f7fa8', '#8a6fa0', '#b9786a', '#5f9c94', '#a88f6a'];
-  for (let i = 0; i < 16; i++) {
-    const cx = r() * 1024, cy = r() * 700, rad = 140 + r() * 260;
-    const g = x.createRadialGradient(cx, cy, 0, cx, cy, rad);
-    const col = hues[Math.floor(r() * hues.length)];
-    g.addColorStop(0, col + '3c'); g.addColorStop(0.6, col + '14'); g.addColorStop(1, col + '00');
-    x.fillStyle = g; x.fillRect(cx - rad, cy - rad, rad * 2, rad * 2);
-  }
-  return c;
-}
-function hexA(hex: string, a: number) {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
-}
-function shade(hex: string, k: number) {
-  const n = parseInt(hex.slice(1), 16), f = (v: number) => Math.max(0, Math.min(255, Math.round(v * k)));
-  return `rgb(${f((n >> 16) & 255)},${f((n >> 8) & 255)},${f(n & 255)})`;
-}
-
-/** What the player is allowed to see of a node. */
 export function known(g: Game, n: GNode): { tier: 'live' | 'stale' | 'detected' | 'hidden'; owner: number; drones: number } {
   if (n.owner === PLAYER || g.vis[n.id] === 2) return { tier: 'live', owner: n.owner, drones: n.drones };
   const it = g.intel[n.id];
@@ -68,269 +37,368 @@ export function known(g: Game, n: GNode): { tier: 'live' | 'stale' | 'detected' 
   return { tier: 'hidden', owner: -1, drones: 0 };
 }
 
-function ell(ctx: CanvasRenderingContext2D, x: number, y: number, rx: number, a0 = 0, a1 = Math.PI * 2) {
-  ctx.beginPath(); ctx.ellipse(x, y, rx, rx * TILT, 0, a0, a1);
+// ------------------------------------------------------------------ scene
+let renderer: THREE.WebGLRenderer | null = null, scene: THREE.Scene, camera: THREE.PerspectiveCamera;
+let ground: THREE.Mesh | null = null, fogCanvas: HTMLCanvasElement, fogTex: THREE.CanvasTexture, fogT = 0, sceneSeed = -1;
+let ringIn: THREE.LineLoop, ringOut: THREE.LineLoop, selRing: THREE.Mesh;
+const nodeViews = new Map<number, { sig: string; grp: THREE.Group; spin: THREE.Object3D | null }>();
+const shipViews = new Map<number, { owner: number; grp: THREE.Group }>();
+const MARGIN = 320;
+let vw = 0, vh = 0;
+const v3 = new THREE.Vector3();
+
+const lam = (color: string, fade = 0) => {
+  const c = new THREE.Color(color);
+  if (fade) c.lerp(new THREE.Color(UNKNOWN), fade);
+  return new THREE.MeshLambertMaterial({ color: c, flatShading: true });
+};
+const flat = (color: string, opacity = 1) => new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity, depthWrite: opacity >= 1 });
+function dispose(o: THREE.Object3D) {
+  o.traverse(c => { const m = c as THREE.Mesh; if (m.geometry) m.geometry.dispose(); const mat = m.material as THREE.Material | THREE.Material[] | undefined; if (Array.isArray(mat)) mat.forEach(x => x.dispose()); else if (mat) mat.dispose(); });
+  o.removeFromParent();
 }
+function ring(inner: number, outer: number, color: string, y: number, start = 0, len = Math.PI * 2, opacity = 1) {
+  const m = new THREE.Mesh(new THREE.RingGeometry(inner, outer, 48, 1, start, len), flat(color, opacity));
+  m.rotation.x = -Math.PI / 2; m.position.y = y;
+  return m;
+}
+
+function init() {
+  const el = document.getElementById('gl') as HTMLCanvasElement;
+  renderer = new THREE.WebGLRenderer({ canvas: el, antialias: true });
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color('#2a3350');
+  camera = new THREE.PerspectiveCamera(FOV, 1, 1, 4000);
+  scene.add(new THREE.HemisphereLight('#fff4e0', '#3d4668', 1.5));
+  const sun = new THREE.DirectionalLight('#fff0d8', 2.2);
+  sun.position.set(-0.7, 1, 0.45);
+  scene.add(sun);
+  const circle: THREE.Vector3[] = [];
+  for (let i = 0; i < 96; i++) circle.push(new THREE.Vector3(Math.cos((i / 96) * Math.PI * 2), 0, Math.sin((i / 96) * Math.PI * 2)));
+  const geo = new THREE.BufferGeometry().setFromPoints(circle);
+  ringIn = new THREE.LineLoop(geo, new THREE.LineBasicMaterial({ color: PAPER, transparent: true, opacity: 0.55 }));
+  ringOut = new THREE.LineLoop(geo, new THREE.LineBasicMaterial({ color: PAPER, transparent: true, opacity: 0.22 }));
+  selRing = ring(1, 1.1, PAPER, 0.12);
+  scene.add(ringIn, ringOut, selRing);
+}
+
+function buildWorld(g: Game) {
+  for (const v of nodeViews.values()) dispose(v.grp);
+  for (const v of shipViews.values()) dispose(v.grp);
+  nodeViews.clear(); shipViews.clear();
+  for (const o of scene.children.filter(c => c.userData.world)) dispose(o);
+  let s = g.seed | 0;
+  const r = () => { s = (s + 0x6d2b79f5) | 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  // deep space lies far below the plane, so stars and colour drifts slide by in parallax as you scroll
+  const pos: number[] = [];
+  for (let i = 0; i < 1400; i++) pos.push(r() * (g.w + 1600) - 800, -150 - r() * 500, r() * (g.h + 1600) - 800);
+  const sg = new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  const stars = new THREE.Points(sg, new THREE.PointsMaterial({ color: PAPER, size: 2.2, sizeAttenuation: false, transparent: true, opacity: 0.8 }));
+  stars.userData.world = true; scene.add(stars);
+  const hues = ['#5f7fa8', '#8a6fa0', '#b9786a', '#5f9c94', '#a88f6a'];
+  for (let i = 0; i < 14; i++) {
+    const m = new THREE.Mesh(new THREE.CircleGeometry(120 + r() * 220, 24), flat(hues[Math.floor(r() * hues.length)], 0.16));
+    m.rotation.x = -Math.PI / 2; m.position.set(r() * (g.w + 600) - 300, -220 - r() * 200, r() * (g.h + 600) - 300);
+    m.userData.world = true; scene.add(m);
+  }
+  fogCanvas = document.createElement('canvas');
+  fogCanvas.width = g.w + MARGIN * 2; fogCanvas.height = g.h + MARGIN * 2;
+  fogTex = new THREE.CanvasTexture(fogCanvas);
+  fogTex.colorSpace = THREE.SRGBColorSpace;
+  ground = new THREE.Mesh(new THREE.PlaneGeometry(fogCanvas.width, fogCanvas.height), new THREE.MeshBasicMaterial({ map: fogTex, transparent: true, depthWrite: false }));
+  ground.rotation.x = -Math.PI / 2; ground.position.set(g.w / 2, -0.2, g.h / 2);
+  ground.userData.world = true; ground.renderOrder = -1; scene.add(ground);
+  fogT = 0;
+}
+
+function hexA(hex: string, a: number) { const n = parseInt(hex.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; }
+function shadeCss(hex: string, k: number) { const n = parseInt(hex.slice(1), 16), f = (v: number) => Math.max(0, Math.min(255, Math.round(v * k))); return `rgb(${f((n >> 16) & 255)},${f((n >> 8) & 255)},${f(n & 255)})`; }
+
+/** Mist over everything, thinned in detection range, cleared in full-intelligence range; territory pools on top. */
+function paintGround(g: Game) {
+  const c = fogCanvas.getContext('2d')!;
+  c.globalCompositeOperation = 'source-over';
+  c.clearRect(0, 0, fogCanvas.width, fogCanvas.height);
+  c.fillStyle = 'rgba(86,97,128,0.8)'; c.fillRect(0, 0, fogCanvas.width, fogCanvas.height);
+  c.globalCompositeOperation = 'destination-out';
+  for (const n of g.nodes) {
+    if (n.owner !== PLAYER) continue;
+    const [ri, ro] = radii(g, n), x = n.x + MARGIN, y = n.y + MARGIN;
+    let gr = c.createRadialGradient(x, y, ro * 0.82, x, y, ro);
+    gr.addColorStop(0, 'rgba(0,0,0,0.5)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = gr; c.beginPath(); c.arc(x, y, ro, 0, 7); c.fill();
+    gr = c.createRadialGradient(x, y, ri * 0.86, x, y, ri);
+    gr.addColorStop(0, 'rgba(0,0,0,1)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = gr; c.beginPath(); c.arc(x, y, ri, 0, 7); c.fill();
+  }
+  c.globalCompositeOperation = 'source-over';
+  for (const n of g.nodes) {
+    const k = known(g, n);
+    if (k.tier === 'hidden' || k.tier === 'detected' || k.owner === 0) continue;
+    const x = n.x + MARGIN, y = n.y + MARGIN, col = sideColor(g, k.owner);
+    const gr = c.createRadialGradient(x, y, 0, x, y, 30);
+    gr.addColorStop(0, hexA(col, 0.4)); gr.addColorStop(0.7, hexA(col, 0.18)); gr.addColorStop(1, hexA(col, 0));
+    c.fillStyle = gr; c.beginPath(); c.arc(x, y, 30, 0, 7); c.fill();
+  }
+  fogTex.needsUpdate = true;
+}
+
+// ------------------------------------------------------------------ models
+function planetMesh(n: GNode, r: number, fade: number): THREE.Mesh {
+  const geo = new THREE.IcosahedronGeometry(r, 1).toNonIndexed();
+  const [base, dark, light] = TERRAIN[n.id % TERRAIN.length].map(c => { const k = new THREE.Color(c); if (fade) k.lerp(new THREE.Color(UNKNOWN), fade); return k; });
+  const p = geo.getAttribute('position'), cols: number[] = [];
+  const band = 0.05 + (n.id % 3) * 0.12;
+  for (let i = 0; i < p.count; i += 3) {
+    const cy = (p.getY(i) + p.getY(i + 1) + p.getY(i + 2)) / 3 / r;
+    const c = cy > 0.62 ? light : Math.abs(cy - band) < 0.14 || (n.size > 0 && Math.abs(cy + 0.42) < 0.1) ? dark : base;
+    for (let k = 0; k < 3; k++) cols.push(c.r, c.g, c.b);
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  const m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }));
+  m.rotation.z = 0.25;
+  return m;
+}
+
+const DOCK_ANGLES = [150, 30, 210, -30].map(d => (d * Math.PI) / 180);
+function dockPos(n: GNode, i: number): { x: number; y: number; z: number; a: number } {
+  const r = nodeR(n);
+  if (n.kind === 'planet') { const a = Math.PI * (0.8 + 0.14 * Math.ceil(i / 2) * (i % 2 ? 1 : -1)); return { x: Math.cos(a) * r * 2.3, y: 0.7, z: Math.sin(a) * r * 2.3, a }; }
+  const a = DOCK_ANGLES[i % 4];
+  return { x: Math.cos(a) * r * 2.25, y: r * 0.5 + r * 0.55 + 0.55, z: Math.sin(a) * r * 2.25, a };
+}
+
+function buildNode(g: Game, n: GNode, tier: string, owner: number): { grp: THREE.Group; spin: THREE.Object3D | null } {
+  const grp = new THREE.Group(), r = nodeR(n), sil = tier === 'detected', fade = tier === 'stale' ? 0.35 : 0;
+  const col = sil ? UNKNOWN : owner === 0 ? NEUTRAL : sideColor(g, owner);
+  let spin: THREE.Object3D | null = null;
+  const blob = new THREE.Mesh(new THREE.CircleGeometry(r * 1.05, 24), flat('#0c101e', 0.4));
+  blob.rotation.x = -Math.PI / 2; blob.position.y = 0.02; grp.add(blob);
+  if (sil) {
+    const m = n.kind === 'planet' ? new THREE.Mesh(new THREE.IcosahedronGeometry(r, 1), flat(UNKNOWN, 0.9)) : new THREE.Mesh(new THREE.CylinderGeometry(r, r, r * 1.1, 6), flat(UNKNOWN, 0.9));
+    m.position.y = bodyMid(n); grp.add(m);
+    return { grp, spin };
+  }
+  if (owner !== 0) grp.add(ring(r * 1.45, r * 1.62, col, 0.06, 0, Math.PI * 2, fade ? 0.5 : 1));
+
+  if (n.kind === 'planet') {
+    const m = planetMesh(n, r, fade); m.position.y = r * 1.5; grp.add(m); spin = m;
+    if (n.size === 2) { const t = new THREE.Mesh(new THREE.TorusGeometry(r * 1.55, r * 0.09, 4, 28), lam(TERRAIN[n.id % 5][2], fade)); t.rotation.x = Math.PI / 2 - 0.3; t.rotation.y = 0.2; t.position.y = r * 1.5; grp.add(t); }
+    // shield generators: pale domes on the ground; mines: small dark rigs; lab: a crystal
+    for (let i = 0; i < (n.b.shield || 0); i++) { const d = new THREE.Mesh(new THREE.SphereGeometry(r * 0.3, 6, 3, 0, Math.PI * 2, 0, Math.PI / 2), lam('#bfe3ff', fade)); d.position.set((i ? 1 : -1) * r * 1.15, 0, r * 0.75); grp.add(d); }
+    for (let i = 0; i < Math.min(4, n.b.mine || 0); i++) { const b = new THREE.Mesh(new THREE.ConeGeometry(r * 0.2, r * 0.55, 4), lam('#7b6a55', fade)); b.position.set(r * (-0.9 + i * 0.6), r * 0.27, -r * 1.25); grp.add(b); }
+    if (n.b.lab) { const b = new THREE.Mesh(new THREE.OctahedronGeometry(r * 0.28), lam('#9ac7e8', fade)); b.position.set(r * 1.35, r * 0.4, -r * 0.5); grp.add(b); }
+  } else {
+    const base = r * 0.5, hh = r * 1.1;
+    const wall = n.citadel ? '#57526f' : HULL;
+    const hullM = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 0.92, hh, 6), lam(wall, fade)); hullM.position.y = base + hh / 2; grp.add(hullM);
+    const keel = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.92, r * 0.35, r * 0.45, 6), lam(n.citadel ? '#413d57' : '#b8ad96', fade)); keel.position.y = base - r * 0.22; grp.add(keel);
+    const roof = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.5, r * 0.68, r * 0.4, 6), lam(col, fade)); roof.position.y = base + hh + r * 0.2; grp.add(roof);
+    if (n.citadel) {
+      const sp = new THREE.Mesh(new THREE.ConeGeometry(r * 0.3, r * 1.9, 6), lam(col, fade)); sp.position.y = base + hh + r * 1.35; grp.add(sp);
+      const halo = new THREE.Mesh(new THREE.TorusGeometry(r * 1.6, r * 0.07, 4, 32), lam(col, fade)); halo.rotation.x = Math.PI / 2; halo.position.y = base + hh * 0.6; grp.add(halo); spin = halo;
+    } else if (n.home || n.capital) {
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.07, r * 0.07, r * 0.9, 4), lam(PAPER, fade)); mast.position.y = base + hh + r * 0.8; grp.add(mast);
+    }
+    // one arm and landing pad per dock; pads are the only places ships can load and unload
+    const nd = Math.min(4, docks(n));
+    for (let i = 0; i < nd; i++) {
+      const a = DOCK_ANGLES[i], len = r * 1.25;
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(len, r * 0.14, r * 0.3), lam('#b8ad96', fade));
+      arm.position.set(Math.cos(a) * (r * 0.9 + len / 2), base + hh / 2, Math.sin(a) * (r * 0.9 + len / 2)); arm.rotation.y = -a; grp.add(arm);
+      const pad = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.42, r * 0.42, r * 0.1, 6), lam(col, fade));
+      pad.position.set(Math.cos(a) * r * 2.25, base + hh / 2 + r * 0.05, Math.sin(a) * r * 2.25); grp.add(pad);
+    }
+    for (let i = 0; i < Math.min(3, n.b.turret || 0); i++) {
+      const a = Math.PI / 2 + (i - 1) * 1.05;
+      const t = new THREE.Mesh(new THREE.BoxGeometry(r * 0.26, r * 0.3, r * 0.26), lam('#6d7385', fade)); t.position.set(Math.cos(a) * r * 0.8, base + hh + r * 0.15, Math.sin(a) * r * 0.8); grp.add(t);
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(r * 0.08, r * 0.08, r * 0.5), lam('#4b5063', fade)); bar.position.set(Math.cos(a) * r * 0.8, base + hh + r * 0.22, Math.sin(a) * r * 0.8 + r * 0.3); grp.add(bar);
+    }
+    if (n.b.screen) { const s = new THREE.Mesh(new THREE.TorusGeometry(r * 1.2, r * 0.06, 4, 24), lam('#bfe3ff', fade)); s.rotation.x = Math.PI / 2; s.position.y = base + hh * 0.2; grp.add(s); }
+    if (n.b.sensor) { const d = new THREE.Mesh(new THREE.ConeGeometry(r * 0.3, r * 0.25, 8, 1, true), lam(PAPER, fade)); d.position.set(-r * 0.45, base + hh + r * 0.55, -r * 0.3); d.rotation.x = Math.PI; grp.add(d); }
+  }
+  return { grp, spin };
+}
+
+function pawnMesh(color: string): THREE.Group {
+  const p = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.ConeGeometry(0.55, 1.3, 6), lam(color)); body.position.y = 0.65;
+  const head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 0), lam(color)); head.position.y = 1.5;
+  p.add(body, head);
+  return p;
+}
+
+function shipMesh(color: string): THREE.Group {
+  // points along +x: tapered hull, swept wing, coloured tail fin
+  const s = new THREE.Group(), m = new THREE.Group();
+  const hullM = new THREE.Mesh(new THREE.ConeGeometry(0.55, 2.6, 4), lam(HULL)); hullM.rotation.z = -Math.PI / 2; hullM.scale.set(1, 1, 1.5);
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.12, 2.6), lam(color)); wing.position.x = -0.6;
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.12), lam(color)); fin.position.set(-0.9, 0.4, 0);
+  m.add(hullM, wing, fin); m.name = 'model';
+  const blob = new THREE.Mesh(new THREE.CircleGeometry(1.2, 12), flat('#0c101e', 0.35)); blob.rotation.x = -Math.PI / 2; blob.name = 'shadow';
+  m.scale.setScalar(1.35);
+  s.add(m, blob);
+  return s;
+}
+
+// ------------------------------------------------------------------ 2D overlay helpers
+export function toScreen(x: number, y: number, hgt = 0): { x: number; y: number } {
+  v3.set(x, hgt, y).project(camera);
+  return { x: (v3.x * 0.5 + 0.5) * vw, y: (-v3.y * 0.5 + 0.5) * vh };
+}
+/** Where on screen to hit-test a node (the middle of its body). */
+export function nodeScreen(n: GNode) { return toScreen(n.x, n.y, bodyMid(n)); }
 
 function flag(ctx: CanvasRenderingContext2D, x: number, y: number, col: string, text: string, big: boolean, faded: boolean, now: number, seed: number) {
   ctx.font = `800 ${big ? 13 : 12}px system-ui`;
-  const fw = Math.max(big ? 30 : 24, ctx.measureText(text).width + 12), fh = big ? 18 : 16, ph = fh + 12;
+  const fw = Math.max(big ? 30 : 24, ctx.measureText(text).width + 12), fh = big ? 18 : 16, ph = fh + 8;
   ctx.strokeStyle = PAPER; ctx.lineWidth = 2; ctx.lineCap = 'round';
   ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y - ph); ctx.stroke();
   const wv = Math.sin(now / 420 + seed) * 1.6, top = y - ph;
   ctx.globalAlpha = faded ? 0.6 : 1;
   ctx.fillStyle = col;
   ctx.beginPath(); ctx.moveTo(x + 1, top); ctx.lineTo(x + fw, top + wv); ctx.lineTo(x + fw - 5, top + fh / 2 + wv); ctx.lineTo(x + fw, top + fh + wv); ctx.lineTo(x + 1, top + fh); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = shade(col, 0.78);
-  ctx.fillRect(x + 1, top + fh - 3, fw - 4, 3);
+  ctx.fillStyle = shadeCss(col, 0.78); ctx.fillRect(x + 1, top + fh - 3, fw - 4, 3);
   ctx.fillStyle = INK; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(text, x + fw / 2 - 1, top + fh / 2 - 0.5 + wv / 2);
   ctx.globalAlpha = 1;
 }
 
-function pawn(ctx: CanvasRenderingContext2D, x: number, y: number, col: string, star: boolean) {
-  ctx.fillStyle = 'rgba(12,16,30,0.35)'; ell(ctx, x, y, 5); ctx.fill();
-  ctx.fillStyle = shade(col, 0.8);
-  ctx.beginPath(); ctx.moveTo(x - 4.5, y); ctx.lineTo(x + 4.5, y); ctx.lineTo(x + 2, y - 9); ctx.lineTo(x - 2, y - 9); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y - 11.5, 3.6, 0, 7); ctx.fill();
-  if (star) { ctx.fillStyle = INK; ctx.font = '800 7px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('★', x, y - 11); }
-}
-
-function hull(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, a: number, col: string, ghost: boolean) {
-  // chunky arrowhead with a darker keel, like a folded-paper boat
-  ctx.save(); ctx.translate(x, y); ctx.rotate(a);
-  if (ghost) ctx.globalAlpha = 0.55;
-  ctx.fillStyle = shade(col, 0.7);
-  ctx.beginPath(); ctx.moveTo(r, 0); ctx.lineTo(-r * 0.8, r * 0.75); ctx.lineTo(-r * 0.4, 0); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = col;
-  ctx.beginPath(); ctx.moveTo(r, 0); ctx.lineTo(-r * 0.8, -r * 0.75); ctx.lineTo(-r * 0.4, 0); ctx.closePath(); ctx.fill();
-  ctx.restore();
-}
-
-function drawPlanet(ctx: CanvasRenderingContext2D, n: GNode, x: number, gy: number, r: number, silhouette: boolean, stale: boolean) {
-  const cy = gy - r * 1.25;
-  if (silhouette) { ctx.fillStyle = UNKNOWN; ctx.beginPath(); ctx.arc(x, cy, r, 0, 7); ctx.fill(); return; }
-  const [base, dark, light] = TERRAIN[n.id % TERRAIN.length];
-  ctx.save();
-  if (stale) ctx.globalAlpha = 0.8;
-  ctx.beginPath(); ctx.arc(x, cy, r, 0, 7); ctx.clip();
-  ctx.fillStyle = dark; ctx.fillRect(x - r, cy - r, r * 2, r * 2);
-  ctx.fillStyle = base; ctx.beginPath(); ctx.arc(x - r * 0.28, cy - r * 0.3, r * 1.02, 0, 7); ctx.fill();
-  // two hard-edged bands and a cap give each world a readable face
-  ctx.fillStyle = hexA(dark, 0.55);
-  ctx.beginPath(); ctx.ellipse(x, cy + r * 0.18 + (n.id % 3) * r * 0.12, r * 1.2, r * 0.13, -0.18, 0, 7); ctx.fill();
-  if (n.size > 0) { ctx.beginPath(); ctx.ellipse(x, cy - r * 0.32, r * 1.2, r * 0.08, -0.18, 0, 7); ctx.fill(); }
-  ctx.fillStyle = light; ctx.beginPath(); ctx.arc(x - r * 0.42, cy - r * 0.46, r * 0.3, 0, 7); ctx.fill();
-  ctx.restore();
-  if (n.size === 2) { // large worlds wear a ring
-    ctx.strokeStyle = hexA(light, stale ? 0.5 : 0.85); ctx.lineWidth = Math.max(1.5, r * 0.11);
-    ctx.beginPath(); ctx.ellipse(x, cy, r * 1.55, r * 0.42, -0.18, 0.12, Math.PI - 0.12); ctx.stroke();
-  }
-}
-
-function drawStation(ctx: CanvasRenderingContext2D, n: GNode, x: number, gy: number, r: number, roof: string, silhouette: boolean, stale: boolean, now: number) {
-  const hgt = r * (n.citadel ? 1.5 : 0.85), top = gy - hgt - r * 0.35, ry = r * TILT;
-  const sides = 6, rot = Math.PI / 6;
-  const pt = (i: number, yy: number, k = 1): [number, number] => [x + Math.cos(rot + (i * Math.PI * 2) / sides) * r * k, yy + Math.sin(rot + (i * Math.PI * 2) / sides) * ry * k];
-  const wall = silhouette ? UNKNOWN : n.citadel ? '#4a4763' : '#e6dcc6';
-  ctx.save();
-  if (stale) ctx.globalAlpha = 0.8;
-  // front-facing walls (the three edges whose midpoint is below centre), each a different flat tone
-  const tones = [0.62, 0.8, 0.7];
-  for (let i = 0, t = 0; i < sides; i++) {
-    const a = pt(i, top), b = pt(i + 1, top);
-    if ((a[1] + b[1]) / 2 <= top + 0.01) continue;
-    ctx.fillStyle = silhouette ? shade(UNKNOWN, 0.85) : shade(wall, tones[t++ % 3]);
-    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(b[0], b[1] + hgt); ctx.lineTo(a[0], a[1] + hgt); ctx.closePath(); ctx.fill();
-  }
-  ctx.fillStyle = wall;
-  ctx.beginPath(); for (let i = 0; i < sides; i++) { const p = pt(i, top); ctx[i ? 'lineTo' : 'moveTo'](p[0], p[1]); } ctx.closePath(); ctx.fill();
-  if (!silhouette) {
-    ctx.fillStyle = roof;
-    ctx.beginPath(); for (let i = 0; i < sides; i++) { const p = pt(i, top, 0.62); ctx[i ? 'lineTo' : 'moveTo'](p[0], p[1]); } ctx.closePath(); ctx.fill();
-    if (n.citadel) { // spire
-      ctx.fillStyle = shade(roof, 0.75); ctx.beginPath(); ctx.moveTo(x, top - r * 1.5); ctx.lineTo(x + r * 0.34, top); ctx.lineTo(x, top + ry * 0.3); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = roof; ctx.beginPath(); ctx.moveTo(x, top - r * 1.5); ctx.lineTo(x - r * 0.34, top); ctx.lineTo(x, top + ry * 0.3); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = PAPER; ctx.globalAlpha = 0.6 + 0.4 * Math.sin(now / 500); ctx.beginPath(); ctx.arc(x, top - r * 1.5, 2, 0, 7); ctx.fill();
-    } else {
-      ctx.fillStyle = shade(roof, 0.7);
-      ctx.beginPath(); ctx.ellipse(x, top, r * 0.22, ry * 0.22, 0, 0, 7); ctx.fill();
-    }
-  }
-  ctx.restore();
-}
-
+// ------------------------------------------------------------------ frame
 export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: number) {
+  if (!renderer) init();
   const { cam, w, h } = ui, z = cam.z;
-  const sx = (x: number) => (x - cam.x) * z + w / 2, sy = (y: number) => (y - cam.y) * z * TILT + h / 2;
+  if (sceneSeed !== g.seed || !ground) { buildWorld(g); sceneSeed = g.seed; }
+  if (vw !== w || vh !== h) { vw = w; vh = h; renderer!.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); renderer!.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+  const D = h / (z * 2 * Math.tan((FOV * Math.PI) / 360));
+  camera.position.set(cam.x, D * Math.sin(PITCH), cam.y + D * Math.cos(PITCH));
+  camera.lookAt(cam.x, 0, cam.y);
+  camera.updateMatrixWorld();
+  if (now - fogT > 350) { fogT = now; paintGround(g); }
 
-  // --- sky: flat dusk gradient, soft colour drifts, parallax stars
-  const sky = ctx.createLinearGradient(0, 0, 0, h);
-  sky.addColorStop(0, '#222a45'); sky.addColorStop(0.55, '#2f3a58'); sky.addColorStop(1, '#46506c');
-  ctx.fillStyle = sky; ctx.fillRect(0, 0, w, h);
-  if (!backdrop || backdropSeed !== g.seed) { backdrop = mkBackdrop(g.seed); backdropSeed = g.seed; }
-  const nz = Math.max(z * 0.5, 1.3), nw = 1024 * nz, nh = 700 * nz * 0.8;
-  ctx.drawImage(backdrop, w / 2 - nw / 2 - (cam.x - g.w / 2) * z * 0.4, h / 2 - nh / 2 - (cam.y - g.h / 2) * z * TILT * 0.4, nw, nh);
-  if (!stars.length) for (let i = 0; i < 240; i++) stars.push({ x: Math.random(), y: Math.random(), r: Math.random() * 1.2 + 0.4, d: [0.06, 0.14, 0.26][i % 3], a: 0.3 + Math.random() * 0.6 });
-  ctx.fillStyle = PAPER;
-  for (const s of stars) {
-    const px = (((s.x * 1600 - cam.x * z * s.d) % 1600) + 1600) % 1600, py = (((s.y * 1200 - cam.y * z * TILT * s.d) % 1200) + 1200) % 1200;
-    if (px > w || py > h) continue;
-    ctx.globalAlpha = s.a * (0.75 + 0.25 * Math.sin(now / 900 + s.x * 40));
-    ctx.fillRect(px, py, s.r * 1.4, s.r * 1.4);
-  }
-  ctx.globalAlpha = 1;
-
-  // --- territory: soft pools of faction colour lying on the plane
+  // --- nodes: rebuild a model only when what the player can see of it changes
   for (const n of g.nodes) {
-    const k = known(g, n);
-    if (k.tier === 'hidden' || k.tier === 'detected' || k.owner === 0) continue;
-    const x = sx(n.x), y = sy(n.y), r = 30 * z;
-    if (x < -r || y < -r || x > w + r || y > h + r) continue;
-    const col = sideColor(g, k.owner);
-    ctx.save(); ctx.translate(x, y); ctx.scale(1, TILT);
-    const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
-    gr.addColorStop(0, hexA(col, 0.34)); gr.addColorStop(0.7, hexA(col, 0.16)); gr.addColorStop(1, hexA(col, 0));
-    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.fill();
-    ctx.restore();
+    const k = known(g, n), v = nodeViews.get(n.id);
+    if (k.tier === 'hidden') { if (v) { dispose(v.grp); nodeViews.delete(n.id); } continue; }
+    const live = k.tier === 'live', b = live ? n.b : g.intel[n.id].snap?.b || {};
+    const natQ = live && n.kind === 'planet' ? Math.round(Math.min(1, n.nat / Math.max(1, n.owner === 0 ? [4, 7, 11][n.size] : natMax(g, n))) * 16) : 0;
+    const laneQ = n.owner === PLAYER && n.lane ? Math.round((1 - n.lane.left / n.lane.total) * 24) : -1;
+    const specs = k.tier === 'detected' ? [] : live ? n.specs : g.intel[n.id].snap?.specs || [];
+    const sig = [k.tier, k.owner, JSON.stringify(b), natQ, laneQ, specs.join('.')].join('|');
+    if (v && v.sig === sig) continue;
+    if (v) dispose(v.grp);
+    const view = buildNode(g, live ? n : ({ ...n, b } as GNode), k.tier, k.owner), r = nodeR(n);
+    if (natQ > 0) view.grp.add(ring(r * 1.2, r * 1.34, '#bfe3ff', 0.08, Math.PI / 2, (natQ / 16) * Math.PI * 2));
+    if (laneQ >= 0) view.grp.add(ring(r * 1.74, r * 1.9, '#e8bd55', 0.08, Math.PI / 2, Math.max(0.05, (laneQ / 24) * Math.PI * 2)));
+    specs.slice(0, 4).forEach((id, i) => { const p = pawnMesh(id === g.cmdSpec ? '#e8bd55' : SPECS[g.specs[id].def].color); p.position.set((i - (Math.min(specs.length, 4) - 1) / 2) * 1.5, 0, r * 1.25 + 0.8); view.grp.add(p); });
+    view.grp.position.set(n.x, 0, n.y);
+    scene.add(view.grp);
+    nodeViews.set(n.id, { sig, ...view });
   }
+  for (const v of nodeViews.values()) if (v.spin) v.spin.rotation.y = now / 6000;
 
-  // --- vision: pale mist, thinned in detection range and cleared in full-intelligence range
-  if (!fog) fog = document.createElement('canvas');
-  const fs = 0.5;
-  if (fog.width !== Math.ceil(w * fs) || fog.height !== Math.ceil(h * fs)) { fog.width = Math.ceil(w * fs); fog.height = Math.ceil(h * fs); }
-  const f = fog.getContext('2d')!;
-  f.setTransform(1, 0, 0, 1, 0, 0);
-  f.globalCompositeOperation = 'source-over';
-  f.clearRect(0, 0, fog.width, fog.height);
-  f.fillStyle = 'rgba(70,80,108,0.72)'; f.fillRect(0, 0, fog.width, fog.height);
-  f.globalCompositeOperation = 'destination-out';
-  for (const n of g.nodes) {
-    if (n.owner !== PLAYER) continue;
-    const [ri, ro] = radii(g, n);
-    f.setTransform(fs, 0, 0, fs * TILT, sx(n.x) * fs, sy(n.y) * fs);
-    let gr = f.createRadialGradient(0, 0, ro * z * 0.82, 0, 0, ro * z);
-    gr.addColorStop(0, 'rgba(0,0,0,0.5)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
-    f.fillStyle = gr; f.beginPath(); f.arc(0, 0, ro * z, 0, 7); f.fill();
-    gr = f.createRadialGradient(0, 0, ri * z * 0.88, 0, 0, ri * z);
-    gr.addColorStop(0, 'rgba(0,0,0,1)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
-    f.fillStyle = gr; f.beginPath(); f.arc(0, 0, ri * z, 0, 7); f.fill();
-  }
-  ctx.drawImage(fog, 0, 0, w, h);
-
-  // --- range rings for the selected node, drawn on the plane
-  const selNode = ui.sel?.type === 'node' ? g.nodes[ui.sel.id] : null;
-  if (selNode && selNode.owner === PLAYER) {
-    const [ri, ro] = radii(g, selNode);
-    ctx.lineWidth = 1.5; ctx.setLineDash([5, 7]);
-    ctx.strokeStyle = hexA(PAPER, 0.4); ell(ctx, sx(selNode.x), sy(selNode.y), ri * z); ctx.stroke();
-    ctx.strokeStyle = hexA(PAPER, 0.18); ell(ctx, sx(selNode.x), sy(selNode.y), ro * z); ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
-  // --- flight paths: dotted trails on the plane
-  const flying: { s: Ship; seen: number }[] = [];
-  ctx.lineCap = 'round';
+  // --- ships: on a dock pad, circling in orbit, or in flight
+  const wanted = new Set<number>(), flying: { s: Ship; seen: number }[] = [];
+  const parked = new Map<number, Ship[]>();
   for (const s of g.ships) {
-    if (s.at >= 0) continue;
-    const seen = shipSeen(g, s);
-    if (!seen) continue;
-    flying.push({ s, seen });
-    const to = g.nodes[s.to], col = s.owner === 0 ? '#d9d9d9' : sideColor(g, s.owner);
-    ctx.strokeStyle = hexA(col, 0.75); ctx.lineWidth = 2.5;
-    ctx.setLineDash([0.1, 9]); ctx.lineDashOffset = -now / 50;
-    ctx.beginPath(); ctx.moveTo(sx(s.x), sy(s.y)); ctx.lineTo(sx(to.x), sy(to.y)); ctx.stroke();
-    ctx.setLineDash([]);
+    if (s.at >= 0) { if (known(g, g.nodes[s.at]).tier === 'live') { if (!parked.has(s.at)) parked.set(s.at, []); parked.get(s.at)!.push(s); } }
+    else { const seen = shipSeen(g, s); if (seen) flying.push({ s, seen }); }
+  }
+  const place = (s: Ship): THREE.Group => {
+    wanted.add(s.id);
+    let v = shipViews.get(s.id);
+    if (!v || v.owner !== s.owner) { if (v) dispose(v.grp); v = { owner: s.owner, grp: shipMesh(s.owner === 0 ? '#d9d9d9' : sideColor(g, s.owner)) }; scene.add(v.grp); shipViews.set(s.id, v); }
+    return v.grp;
+  };
+  for (const [nid, list] of parked) {
+    const n = g.nodes[nid], nd = Math.min(n.kind === 'planet' ? 6 : 4, docks(n)), r = nodeR(n);
+    list.sort((a, b) => a.seq - b.seq).slice(0, 8).forEach((s, i) => {
+      const grp = place(s), model = grp.getObjectByName('model')!, sh = grp.getObjectByName('shadow')!;
+      if (i < nd) { // docked: nose out on its pad; a loading ship lifts off the pad
+        const d = dockPos(n, i), lift = s.loadUntil > 0 ? 0.5 + 0.3 * Math.sin(now / 150) : 0;
+        grp.position.set(n.x + d.x, 0, n.y + d.z); grp.rotation.y = -d.a;
+        model.position.y = d.y + lift; model.rotation.x = 0; sh.visible = n.kind === 'planet'; sh.position.y = 0.04;
+      } else { // orbiting: no free dock, cargo stays aboard
+        const a = now / 1500 + (i - nd) * 1.6, rad = r * 3.1;
+        grp.position.set(n.x + Math.cos(a) * rad, 0, n.y + Math.sin(a) * rad); grp.rotation.y = -(a + Math.PI / 2);
+        model.position.y = bodyMid(n) + r * 0.9; model.rotation.x = -0.45; sh.visible = false;
+      }
+    });
+  }
+  for (const { s } of flying) {
+    const grp = place(s), to = g.nodes[s.to], model = grp.getObjectByName('model')!;
+    grp.position.set(s.x, 0, s.y); grp.rotation.y = -Math.atan2(to.y - s.y, to.x - s.x);
+    model.position.y = 3 + 0.25 * Math.sin(now / 400 + s.id); model.rotation.x = 0; const fs = grp.getObjectByName('shadow')!; fs.visible = true; fs.position.y = 0.04;
+  }
+  for (const [id, v] of shipViews) if (!wanted.has(id)) { dispose(v.grp); shipViews.delete(id); }
+
+  // --- selection and range rings on the plane
+  const selNode = ui.sel?.type === 'node' ? g.nodes[ui.sel.id] : null;
+  ringIn.visible = ringOut.visible = !!selNode && selNode.owner === PLAYER;
+  selRing.visible = !!selNode;
+  if (selNode) {
+    selRing.position.set(selNode.x, 0.12, selNode.y); selRing.scale.setScalar(nodeR(selNode) * 2.05);
+    if (ringIn.visible) { const [ri, ro] = radii(g, selNode); ringIn.position.set(selNode.x, 0.1, selNode.y); ringIn.scale.setScalar(ri); ringOut.position.set(selNode.x, 0.1, selNode.y); ringOut.scale.setScalar(ro); }
+  }
+  renderer!.render(scene, camera);
+
+  // --- overlay: trails, flags, names, tags
+  ctx.clearRect(0, 0, w, h);
+  ctx.lineCap = 'round';
+  for (const { s } of flying) {
+    const to = g.nodes[s.to], a = toScreen(s.x, s.y), b = toScreen(to.x, to.y), col = s.owner === 0 ? '#d9d9d9' : sideColor(g, s.owner);
+    ctx.strokeStyle = hexA(col, 0.8); ctx.lineWidth = 2.5; ctx.setLineDash([0.1, 9]); ctx.lineDashOffset = -now / 50;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
   }
   if (ui.targeting && ui.from >= 0 && ui.hover >= 0 && ui.hover !== ui.from) {
-    const a = g.nodes[ui.from], b = g.nodes[ui.hover];
-    ctx.strokeStyle = PAPER; ctx.lineWidth = 3; ctx.setLineDash([0.1, 9]);
-    ctx.beginPath(); ctx.moveTo(sx(a.x), sy(a.y)); ctx.lineTo(sx(b.x), sy(b.y)); ctx.stroke();
-    ctx.setLineDash([]);
+    const a = toScreen(g.nodes[ui.from].x, g.nodes[ui.from].y), b = toScreen(g.nodes[ui.hover].x, g.nodes[ui.hover].y);
+    ctx.strokeStyle = PAPER; ctx.lineWidth = 3; ctx.setLineDash([0.1, 9]); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
   }
-
-  // --- everything that stands on the plane, painted back to front
-  type Item = { y: number; node?: GNode; ship?: Ship; seen?: number };
-  const items: Item[] = [];
-  for (const n of g.nodes) if (known(g, n).tier !== 'hidden') items.push({ y: n.y, node: n });
-  for (const fl of flying) items.push({ y: fl.s.y, ship: fl.s, seen: fl.seen });
-  items.sort((a, b) => a.y - b.y);
   const cmd = g.specs[g.cmdSpec];
-  const names: { t: string; x: number; y: number; a: number }[] = [];
-
-  for (const it of items) {
-    if (it.ship) {
-      const s = it.ship, to = g.nodes[s.to], x = sx(s.x), gy = sy(s.y), lift = 9 + 2 * Math.sin(now / 500 + s.id);
-      const a = Math.atan2((to.y - s.y) * TILT, to.x - s.x), col = s.owner === 0 ? '#d9d9d9' : sideColor(g, s.owner);
-      ctx.fillStyle = 'rgba(12,16,30,0.4)'; ell(ctx, x, gy, 11); ctx.fill();
-      if (ui.sel?.type === 'ship' && ui.sel.id === s.id) { ctx.strokeStyle = PAPER; ctx.lineWidth = 2; ell(ctx, x, gy, 14); ctx.stroke(); }
-      hull(ctx, x, gy - lift, 13, a, col, false);
-      flag(ctx, x, gy - lift - 6, col, (s.specs.includes(g.cmdSpec) ? '★' : '') + (it.seen === 2 ? String(s.drones) : '?'), false, false, now, s.id);
-      continue;
-    }
-    const n = it.node!, k = known(g, n);
-    const x = sx(n.x), gy = sy(n.y), r = nodeR(n) * z;
-    if (x < -90 || gy < -40 || x > w + 90 || gy > h + 120) continue;
-    const sil = k.tier === 'detected', stale = k.tier === 'stale';
+  const order = g.nodes.filter(n => known(g, n).tier !== 'hidden').sort((a, b) => a.y - b.y);
+  for (const n of order) {
+    const k = known(g, n), top = toScreen(n.x, n.y, bodyTop(n));
+    if (top.x < -80 || top.y < -40 || top.x > w + 80 || top.y > h + 140) continue;
+    const gp = toScreen(n.x, n.y), sil = k.tier === 'detected', stale = k.tier === 'stale';
     const col = sil ? UNKNOWN : k.owner === 0 ? NEUTRAL : sideColor(g, k.owner);
-    const baseR = r * 1.5;
-
-    // ground: shadow, ownership ring, selection, progress
-    ctx.fillStyle = 'rgba(12,16,30,0.42)'; ell(ctx, x, gy, r * 1.05); ctx.fill();
-    if (!sil && k.owner !== 0) { ctx.strokeStyle = hexA(col, stale ? 0.5 : 0.95); ctx.lineWidth = 3; ell(ctx, x, gy, baseR); ctx.stroke(); }
+    const pr = nodeR(n) * z;
     if (ui.targeting && n.id !== ui.from && (canTarget(g, n) || n.owner === PLAYER)) {
-      ctx.strokeStyle = hexA(PAPER, 0.35 + 0.3 * Math.sin(now / 250)); ctx.lineWidth = 2.5; ell(ctx, x, gy, baseR + 6); ctx.stroke();
+      ctx.strokeStyle = hexA(PAPER, 0.35 + 0.3 * Math.sin(now / 250)); ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.ellipse(gp.x, gp.y, pr * 2.3, pr * 2.3 * TILT, 0, 0, 7); ctx.stroke();
     }
-    if (ui.sel?.type === 'node' && ui.sel.id === n.id) { ctx.strokeStyle = PAPER; ctx.lineWidth = 2.5; ctx.setLineDash([7, 5]); ctx.lineDashOffset = -now / 80; ell(ctx, x, gy, baseR + 5); ctx.stroke(); ctx.setLineDash([]); }
-    if (k.tier === 'live' && n.kind === 'planet' && n.nat >= 1) {
-      const mx = Math.max(1, n.owner === 0 ? [4, 7, 11][n.size] : natMax(g, n));
-      ctx.strokeStyle = '#bfe3ff'; ctx.lineWidth = 2.5; ell(ctx, x, gy, baseR - 5, Math.PI / 2, Math.PI / 2 + Math.PI * 2 * Math.min(1, n.nat / mx)); ctx.stroke();
-    }
-    if (n.owner === PLAYER && n.lane) { ctx.strokeStyle = '#e8bd55'; ctx.lineWidth = 3; ell(ctx, x, gy, baseR + 5, Math.PI / 2, Math.PI / 2 + Math.PI * 2 * (1 - n.lane.left / n.lane.total)); ctx.stroke(); }
-
-    // parked ships sit on the plane behind the body; orbiters circle it
-    if (k.tier === 'live') {
-      g.ships.filter(s => s.at === n.id).slice(0, 5).forEach((s, i) => {
-        const c = sideColor(g, s.owner);
-        if (isDocked(g, s)) hull(ctx, x - baseR - 4 - i * 9, gy - 5 - i * 2, 6.5, -Math.PI / 2, c, s.loadUntil > 0);
-        else { const a = now / 1100 + i * 1.4; hull(ctx, x + Math.cos(a) * (baseR + 12), gy - r * 0.9 + Math.sin(a) * (baseR + 12) * TILT, 6, a + Math.PI / 2, c, false); }
-      });
-    }
-
-    // body
-    if (n.kind === 'planet') drawPlanet(ctx, n, x, gy, r, sil, stale);
-    else drawStation(ctx, n, x, gy, r, col, sil, stale, now);
-    const topY = n.kind === 'planet' ? gy - r * 2.25 : gy - r * (n.citadel ? 1.5 : 0.85) - r * 0.35 - r * TILT * 0.4;
-
-    // flag with the garrison count, or a paper tag for unknowns
     if (sil) {
-      ctx.fillStyle = PAPER; ctx.font = '800 13px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.globalAlpha = 0.75;
-      ctx.fillText('?', x, n.kind === 'planet' ? gy - r * 1.25 : gy - r);
-      ctx.globalAlpha = 1;
+      const mid = toScreen(n.x, n.y, bodyMid(n));
+      ctx.fillStyle = PAPER; ctx.font = '800 14px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.globalAlpha = 0.8; ctx.fillText('?', mid.x, mid.y); ctx.globalAlpha = 1;
     } else {
       const glyph = n.home ? '⌂ ' : n.citadel ? '✦ ' : n.capital ? '♛ ' : '';
-      flag(ctx, x + (n.kind === 'planet' ? 0 : r * 0.1), topY + (n.kind === 'planet' ? 3 : r * TILT * 0.4), col, glyph + (stale ? '~' : '') + k.drones, n.home || n.capital || n.citadel, stale, now, n.id);
-    }
-    if (z > 4.5) names.push({ t: n.name.toUpperCase(), x, y: gy + baseR * TILT + 12, a: sil ? 0.4 : 0.8 });
-
-    // specialists stand in front as pawns; paper tags mark things worth knowing
-    if (!sil) {
-      const specs = k.tier === 'live' ? n.specs : g.intel[n.id].snap?.specs || [];
-      const cnt = Math.min(specs.length, 4);
-      specs.slice(0, 4).forEach((id, i) => pawn(ctx, x - (cnt - 1) * 5.5 + i * 11, gy + baseR * TILT * 0.55, id === g.cmdSpec ? '#e8bd55' : SPECS[g.specs[id].def].color, id === g.cmdSpec));
-      let tx = x + baseR + 6;
-      const tag = (t: string, bg: string) => {
-        ctx.fillStyle = bg; ctx.beginPath(); ctx.roundRect(tx - 7, gy - r * 1.2 - 8, 15, 16, 4); ctx.fill();
-        ctx.fillStyle = INK; ctx.font = '800 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(t, tx + 0.5, gy - r * 1.2 + 0.5); tx += 18;
-      };
+      flag(ctx, top.x, top.y + 2, col, glyph + (stale ? '~' : '') + k.drones, n.home || n.capital || n.citadel, stale, now, n.id);
+      let tx = gp.x + pr * 1.7 + 8; const ty = toScreen(n.x, n.y, bodyMid(n)).y;
+      const tag = (t: string, bg: string) => { ctx.fillStyle = bg; ctx.beginPath(); ctx.roundRect(tx - 8, ty - 8, 16, 16, 4); ctx.fill(); ctx.fillStyle = INK; ctx.font = '800 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(t, tx, ty + 0.5); tx += 19; };
       if (n.event) tag('!', '#e8bd55');
       if (n.offer && n.owner !== PLAYER) tag('☺', '#e9a9c9');
       if (n.hold) tag('◷', '#a9dcec');
       if (n.owner === PLAYER && n.prisoners.length) tag('⛓', '#e6a183');
       if (cmd && cmd.held && cmd.node === n.id) tag('★', '#e2604e');
+      // a dashed orbit lane appears whenever ships are circling without a dock
+      { const all = parked.get(n.id) || [], ndk = Math.min(n.kind === 'planet' ? 6 : 4, docks(n));
+        if (all.length > ndk) { const rr = nodeR(n) * 3.1, hy = bodyMid(n) + nodeR(n) * 0.9; ctx.strokeStyle = hexA(PAPER, 0.45); ctx.lineWidth = 1.5; ctx.setLineDash([4, 6]); ctx.beginPath();
+          for (let i = 0; i <= 40; i++) { const a = (i / 40) * Math.PI * 2, q = toScreen(n.x + Math.cos(a) * rr, n.y + Math.sin(a) * rr, hy); ctx[i ? 'lineTo' : 'moveTo'](q.x, q.y); } ctx.stroke(); ctx.setLineDash([]); } }
+      // dock occupancy at a glance for your stations
+      if (n.owner === PLAYER && n.kind === 'station') {
+        const here = (parked.get(n.id) || []).filter(s => s.owner === PLAYER).length, nd = docks(n);
+        if (here > nd) { ctx.font = '700 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#e8a85a'; ctx.fillText(`${here - nd} IN ORBIT`, gp.x, gp.y + pr * 1.9 * TILT + 26); }
+      }
+    }
+    if (z > 4.5) {
+      const ny = gp.y + pr * 1.9 * TILT + 12;
+      ctx.font = '700 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'rgba(29,35,53,0.7)'; ctx.lineWidth = 3; ctx.strokeText(n.name.toUpperCase(), gp.x, ny);
+      ctx.fillStyle = hexA(PAPER, sil ? 0.45 : 0.85); ctx.fillText(n.name.toUpperCase(), gp.x, ny);
     }
   }
-  // names go on last so no body hides them
-  ctx.font = '700 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
-  for (const nm of names) { ctx.strokeStyle = 'rgba(29,35,53,0.7)'; ctx.lineWidth = 3; ctx.strokeText(nm.t, nm.x, nm.y); ctx.fillStyle = hexA(PAPER, nm.a); ctx.fillText(nm.t, nm.x, nm.y); }
+  for (const { s, seen } of flying) {
+    const p = toScreen(s.x, s.y, 4.4), col = s.owner === 0 ? '#d9d9d9' : sideColor(g, s.owner);
+    if (ui.sel?.type === 'ship' && ui.sel.id === s.id) { const gp = toScreen(s.x, s.y); ctx.strokeStyle = PAPER; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(gp.x, gp.y, 16, 16 * TILT, 0, 0, 7); ctx.stroke(); }
+    flag(ctx, p.x, p.y, col, (s.specs.includes(g.cmdSpec) ? '★' : '') + (seen === 2 ? String(s.drones) : '?'), false, false, now, s.id);
+  }
 }

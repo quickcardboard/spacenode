@@ -6,7 +6,7 @@ import { newGame } from './sim/mapgen';
 import { step, exec, type Cmd } from './sim/sim';
 import { canTarget, shipById, shipSeen, isDocked, updateVision } from './sim/core';
 import { abilitiesOf, abilityCheck } from './sim/abilities';
-import { draw, nodeR, known, bodyY, TILT, type Cam } from './ui/render';
+import { draw, nodeR, known, toScreen, nodeScreen, TILT, type Cam } from './ui/render';
 import { hud, panel, menu, modal, title, help, launchPreview, launchPool, minToWin, type App } from './ui/ui';
 
 const SAVE = 'spacenodes.save.v1', META = 'spacenodes.meta.v1';
@@ -161,13 +161,14 @@ function pick(px: number, py: number): { type: 'node' | 'ship'; id: number } | n
   const g = app.g!;
   for (const s of g.ships) {
     if (s.at >= 0 || !shipSeen(g, s)) continue;
-    if (Math.hypot((s.x - cam.x) * cam.z + W / 2 - px, (s.y - cam.y) * cam.z * TILT + H / 2 - 10 - py) < 20) return { type: 'ship', id: s.id };
+    const sp = toScreen(s.x, s.y, 3);
+    if (Math.hypot(sp.x - px, sp.y - py) < 24) return { type: 'ship', id: s.id };
   }
   let best = -1, bd = 1e9;
   for (const n of g.nodes) {
     if (known(g, n).tier === 'hidden') continue;
-    const d = Math.hypot((n.x - cam.x) * cam.z + W / 2 - px, (n.y - cam.y) * cam.z * TILT + H / 2 - bodyY(n, cam.z) * 0.8 - py);
-    if (d < Math.max(26, nodeR(n) * cam.z * 1.6 + 10) && d < bd) { bd = d; best = n.id; }
+    const np = nodeScreen(n), d = Math.hypot(np.x - px, np.y - py);
+    if (d < Math.max(30, nodeR(n) * cam.z * 2.3) && d < bd) { bd = d; best = n.id; }
   }
   return best >= 0 ? { type: 'node', id: best } : null;
 }

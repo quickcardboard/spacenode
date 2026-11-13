@@ -15,7 +15,7 @@ npm run bot -- 8 greedy 0   # headless balance runs: [count] [greedy|idle] [thre
 
 - `src/sim/` is the game: deterministic, seeded, fixed 10 Hz step, no DOM. `sim.ts` exposes `step()` and `exec(command)`; everything the player does is a command.
 - `src/sim/config.ts` and `src/sim/content.ts` hold every balance number and all content (specialists, commander archetypes, perks, relics, technologies, factions, Archons, events).
-- `src/ui/` draws the map on a canvas and builds the panels; `src/main.ts` is input, the loop and autosave.
+- `src/ui/render.ts` draws the map in 3D with Three.js (low-poly lit models, dock arms, docked and orbiting ships) under a 2D overlay for flags and labels; `src/ui/ui.ts` builds the panels; `src/main.ts` is input, the loop and autosave.
 - `scripts/bot.ts` plays full runs without a browser.
 
 ## Rules as built
