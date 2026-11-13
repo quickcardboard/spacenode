@@ -9,7 +9,10 @@ npm install
 npm run dev      # play at the printed URL (works on a phone on the same network)
 npm run build    # static site in dist/
 npm run bot -- 8 greedy 0   # headless balance runs: [count] [greedy|idle] [threat level]
+npm run pages    # rebuild the playable copy in docs/ (served by GitHub Pages)
 ```
+
+Play in a browser: https://quickcardboard.github.io/spacenode/ (once GitHub Pages is switched on for the `docs/` folder).
 
 ## Layout
 

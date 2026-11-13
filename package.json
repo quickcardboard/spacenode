@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
     "check": "tsc --noEmit",
-    "bot": "tsx scripts/bot.ts"
+    "bot": "tsx scripts/bot.ts",
+    "pages": "tsc --noEmit && vite build --outDir docs --emptyOutDir && touch docs/.nojekyll"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
