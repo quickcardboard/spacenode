@@ -13,8 +13,8 @@ export const CFG = {
   capBySize: [6, 9, 13], // Ultanium per minute ceiling
   mineBase: 3.2, sizeMult: [1, 1.5, 2.2], mineDim: [1, 0.75, 0.5, 0.3, 0.3],
   mineSlots: [2, 3, 4], minesPerGen: 2,
-  fovInner: { planet: [54, 60, 68], station: 62 },
-  fovOuter: { planet: [95, 104, 115], station: 110 },
+  fovInner: { planet: [42, 46, 52], station: 48 },
+  fovOuter: { planet: [72, 78, 88], station: 82 },
   specSlots: 3,
   rescueSecs: 150,
   ransom: 15, recruitCost: 40, convertSecs: 60,
