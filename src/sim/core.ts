@@ -23,8 +23,8 @@ export function sideName(g: Game, o: number): string {
 export function sideColor(g: Game, o: number): string {
   const s = g.sides[o];
   if (!s) return '#9aa3ad';
-  if (s.kind === 'player') return '#3ddc97';
-  return s.kind === 'faction' ? FACTIONS[s.fac].color : '#ff5fa2';
+  if (s.kind === 'player') return '#6cc5a0';
+  return s.kind === 'faction' ? FACTIONS[s.fac].color : '#e07aa0';
 }
 
 // ---------------------------------------------------------------- specialists

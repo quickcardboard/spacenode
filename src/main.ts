@@ -6,7 +6,7 @@ import { newGame } from './sim/mapgen';
 import { step, exec, type Cmd } from './sim/sim';
 import { canTarget, shipById, shipSeen, isDocked, updateVision } from './sim/core';
 import { abilitiesOf, abilityCheck } from './sim/abilities';
-import { draw, nodeR, known, type Cam } from './ui/render';
+import { draw, nodeR, known, bodyY, TILT, type Cam } from './ui/render';
 import { hud, panel, menu, modal, title, help, launchPreview, launchPool, minToWin, type App } from './ui/ui';
 
 const SAVE = 'spacenodes.save.v1', META = 'spacenodes.meta.v1';
@@ -31,7 +31,7 @@ const toasts: { msg: string; kind: string; node: number; until: number }[] = [];
 function startRun(g: Game) {
   app.g = g; app.screen = 'game'; app.sel = null; app.menu = null; app.mode = null; app.launch = null; app.paused = false; app.speed = 1;
   const h = g.nodes[g.home];
-  cam.x = h.x + 40; cam.y = h.y; cam.z = Math.max(2.2, Math.min(3.4, Math.min(W, H) / 150));
+  cam.x = h.x + 30; cam.y = h.y; cam.z = Math.max(2.6, Math.min(3.8, Math.min(W, H) / 130));
   lastLog = g.log.length; toasts.length = 0; dirty = true;
 }
 function save() { if (app.g && !app.g.result && app.screen === 'game') { store.set(SAVE, JSON.stringify(app.g)); app.hasSave = true; } }
@@ -50,7 +50,7 @@ function run(c: Cmd): boolean { const err = exec(app.g!, c); note(err); dirty = 
 function focus(id: number) {
   const n = app.g!.nodes[id];
   const mobile = W < 820, open = !!app.sel || !!app.launch;
-  camTo = { x: n.x + (!mobile && open ? 190 / cam.z : 0), y: n.y + (mobile && open ? (H * 0.24) / cam.z : 0) };
+  camTo = { x: n.x + (!mobile && open ? 190 / cam.z : 0), y: n.y + (mobile && open ? (H * 0.22) / (cam.z * TILT) : 0) };
 }
 function select(type: 'node' | 'ship', id: number) { app.sel = { type, id }; app.tab = 'info'; app.launch = null; dirty = true; if (type === 'node') focus(id); }
 
@@ -139,8 +139,10 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('pointerdown', e => { if ((e.target as HTMLElement).id === 'lslider') sliding = true; });
 document.addEventListener('pointerup', () => { if (sliding) { sliding = false; dirty = true; } });
+document.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
 document.addEventListener('keydown', e => {
   if (app.screen !== 'game' || !app.g) return;
+  keys.add(e.key.toLowerCase());
   if (e.key === ' ') { e.preventDefault(); act('pause', document.body); }
   else if (e.key === '1') { app.speed = 1; dirty = true; } else if (e.key === '2') { app.speed = 2; dirty = true; } else if (e.key === '3') { app.speed = 4; dirty = true; }
   else if (e.key === 'm' || e.key === 'M') act(app.menu ? 'menu:' : 'menu:specs', document.body);
@@ -152,19 +154,20 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) save(
 // ------------------------------------------------------------------ map input
 const ptrs = new Map<number, { x: number; y: number }>();
 let downAt: { x: number; y: number; t: number } | null = null, moved = false, pinch = 0;
-const toWorld = (px: number, py: number) => ({ x: (px - W / 2) / cam.z + cam.x, y: (py - H / 2) / cam.z + cam.y });
+const toWorld = (px: number, py: number) => ({ x: (px - W / 2) / cam.z + cam.x, y: (py - H / 2) / (cam.z * TILT) + cam.y });
+const vel = { x: 0, y: 0 }; const keys = new Set<string>();
 
 function pick(px: number, py: number): { type: 'node' | 'ship'; id: number } | null {
   const g = app.g!;
   for (const s of g.ships) {
     if (s.at >= 0 || !shipSeen(g, s)) continue;
-    if (Math.hypot((s.x - cam.x) * cam.z + W / 2 - px, (s.y - cam.y) * cam.z + H / 2 - py) < 18) return { type: 'ship', id: s.id };
+    if (Math.hypot((s.x - cam.x) * cam.z + W / 2 - px, (s.y - cam.y) * cam.z * TILT + H / 2 - 10 - py) < 20) return { type: 'ship', id: s.id };
   }
   let best = -1, bd = 1e9;
   for (const n of g.nodes) {
     if (known(g, n).tier === 'hidden') continue;
-    const d = Math.hypot((n.x - cam.x) * cam.z + W / 2 - px, (n.y - cam.y) * cam.z + H / 2 - py);
-    if (d < Math.max(24, nodeR(n) * cam.z + 12) && d < bd) { bd = d; best = n.id; }
+    const d = Math.hypot((n.x - cam.x) * cam.z + W / 2 - px, (n.y - cam.y) * cam.z * TILT + H / 2 - bodyY(n, cam.z) * 0.8 - py);
+    if (d < Math.max(26, nodeR(n) * cam.z * 1.6 + 10) && d < bd) { bd = d; best = n.id; }
   }
   return best >= 0 ? { type: 'node', id: best } : null;
 }
@@ -188,7 +191,7 @@ canvas.addEventListener('pointerdown', e => {
   ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (ptrs.size === 1) { downAt = { x: e.clientX, y: e.clientY, t: performance.now() }; moved = false; }
   if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = Math.hypot(a.x - b.x, a.y - b.y); moved = true; }
-  camTo = null;
+  camTo = null; vel.x = vel.y = 0;
 });
 canvas.addEventListener('pointermove', e => {
   const p = ptrs.get(e.pointerId);
@@ -197,7 +200,7 @@ canvas.addEventListener('pointermove', e => {
   p.x = e.clientX; p.y = e.clientY;
   if (ptrs.size === 1) {
     if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 8) moved = true;
-    if (moved) { cam.x -= dx / cam.z; cam.y -= dy / cam.z; }
+    if (moved) { cam.x -= dx / cam.z; cam.y -= dy / (cam.z * TILT); vel.x = -dx / cam.z; vel.y = -dy / (cam.z * TILT); }
   } else if (ptrs.size === 2) {
     const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
     if (pinch > 0) zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / pinch);
@@ -268,12 +271,16 @@ function frame(now: number) {
       if (acc > 1) acc = 0;
     }
     if (g.result && !ended) { ended = true; endRun(); dirty = true; }
+    // scrolling: drag inertia, arrow keys / WASD, and glide-to-focus
+    if (!ptrs.size && (Math.abs(vel.x) + Math.abs(vel.y) > 0.01)) { cam.x += vel.x; cam.y += vel.y; vel.x *= 0.9; vel.y *= 0.9; }
+    const kx = (keys.has('arrowright') || keys.has('d') ? 1 : 0) - (keys.has('arrowleft') || keys.has('a') ? 1 : 0), ky = (keys.has('arrowdown') || keys.has('s') ? 1 : 0) - (keys.has('arrowup') || keys.has('w') ? 1 : 0);
+    if (kx || ky) { camTo = null; cam.x += (kx * 420 * dt) / cam.z; cam.y += (ky * 420 * dt) / (cam.z * TILT); }
     if (camTo) { cam.x += (camTo.x - cam.x) * 0.16; cam.y += (camTo.y - cam.y) * 0.16; if (Math.hypot(camTo.x - cam.x, camTo.y - cam.y) < 0.4) camTo = null; }
     cam.x = Math.max(-40, Math.min(g.w + 40, cam.x)); cam.y = Math.max(-40, Math.min(g.h + 40, cam.y));
     const from = app.mode?.k === 'launch' ? shipById(g, app.mode.ship)?.at ?? -1 : -1;
     draw(ctx, g, { cam, w: W, h: H, sel: app.launch ? { type: 'node', id: app.launch.to } : app.sel, targeting: !!app.mode, from, hover }, now);
     if (now - lastSave > 15000) { lastSave = now; save(); }
-  } else { ctx.fillStyle = '#12162b'; ctx.fillRect(0, 0, W, H); }
+  } else { ctx.fillStyle = '#262e49'; ctx.fillRect(0, 0, W, H); }
   if (dirty || now - lastUi > 250) { dirty = false; lastUi = now; refresh(); }
   requestAnimationFrame(frame);
 }

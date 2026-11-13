@@ -26,7 +26,7 @@ export interface SpecDef {
 const A = (id: string, name: string, cd: number, target: AbilityDef['target'], at: AbilityDef['at'], desc: string): AbilityDef =>
   ({ id, name, cd, target, at, desc });
 
-const C = { fleet: '#5aa9e6', eco: '#e8c45a', def: '#7bd389', intel: '#b58cf0', war: '#f0705a', odd: '#f29ad0' };
+const C = { fleet: '#7fb2dc', eco: '#e3c565', def: '#8fc79a', intel: '#b39ad6', war: '#dd7a63', odd: '#e9a9c9' };
 
 export const SPECS: Record<string, SpecDef> = {};
 const S = (d: SpecDef) => (SPECS[d.id] = d);
@@ -265,19 +265,19 @@ export const FACTIONS: Record<string, FactionDef> = {
     desc: 'Fortress industry. Slow to attack, expensive to dislodge.', tell: '+2 defence everywhere; builds turrets and shields relentlessly.',
     mods: { def: 2, build: 0.3 }, ai: { aggr: 0.6, expand: 150, react: 0.9, target: 'weak', build: { turret: 5, shield: 5, screen: 3, mine: 3, gen: 3, barracks: 1 } },
     techs: ['fort', 'extraction', 'automation', 'siege'], specs: ['sentinel', 'castellan', 'engineer'] },
-  crimson: { id: 'crimson', name: 'Crimson Warhost', color: '#e0524d', warlord: 'Warlord Ashka', sig: 'berserker',
+  crimson: { id: 'crimson', name: 'Crimson Warhost', color: '#d2604a', warlord: 'Warlord Ashka', sig: 'berserker',
     desc: 'Wave aggression. Thin defences, constant pressure.', tell: 'Drones produced 35% faster; attacks the nearest target often.',
     mods: { prod: 0.35, atkPct: 0.1 }, ai: { aggr: 1.4, expand: 110, react: 0.4, target: 'near', build: { barracks: 6, shipyard: 3, turret: 1, mine: 2, gen: 2, dock: 1 } },
     techs: ['coord', 'engines', 'siege', 'training'], specs: ['foreman', 'vanguard', 'tactician'] },
-  lumen: { id: 'lumen', name: 'Lumen Technocracy', color: '#e8d36a', warlord: 'Prime Calculator Ione', sig: 'lens',
+  lumen: { id: 'lumen', name: 'Lumen Technocracy', color: '#e3c565', warlord: 'Prime Calculator Ione', sig: 'lens',
     desc: 'Lance batteries thin every attacking fleet before it lands.', tell: 'Destroys 15% of attackers before battle; gains two technologies per stage.',
     mods: { preKill: 0.15, natMax: 3 }, ai: { aggr: 0.8, expand: 170, react: 0.7, target: 'weak', build: { shield: 4, sensor: 2, turret: 2, mine: 3, gen: 3, screen: 2 } },
     techs: ['sigint', 'fort', 'coord', 'engines', 'siege', 'extraction', 'training', 'sensors'], specs: ['scientist', 'sentinel', 'scout'] },
-  veil: { id: 'veil', name: 'Veil Syndicate', color: '#9b6bd6', warlord: 'The Whisper', sig: 'phantom',
+  veil: { id: 'veil', name: 'Veil Syndicate', color: '#9a7cc4', warlord: 'The Whisper', sig: 'phantom',
     desc: 'Unseen fleets that hunt your specialists.', tell: 'Fleets are invisible until inside full-intelligence range; targets nodes holding specialists.',
     mods: { stealth: 1, speed: 0.1 }, ai: { aggr: 1.0, expand: 160, react: 0.6, target: 'spec', build: { sensor: 3, turret: 2, barracks: 3, mine: 2, gen: 2, shield: 1 } },
     techs: ['engines', 'coord', 'sigint', 'training'], specs: ['saboteur', 'ghost', 'pirate'] },
-  drift: { id: 'drift', name: 'Drift Clans', color: '#5aa9e6', warlord: 'Clanmother Sura', sig: 'wayfinder',
+  drift: { id: 'drift', name: 'Drift Clans', color: '#6ea6d6', warlord: 'Clanmother Sura', sig: 'wayfinder',
     desc: 'Fast nomads who swallow neutral space.', tell: 'Ships 40% faster; expands into neutral territory twice as often.',
     mods: { speed: 0.4 }, ai: { aggr: 1.1, expand: 70, react: 0.8, target: 'near', build: { dock: 2, shipyard: 4, barracks: 3, mine: 3, gen: 3, turret: 1 } },
     techs: ['engines', 'sensors', 'coord', 'extraction'], specs: ['admiral', 'navigator', 'cartographer'] },

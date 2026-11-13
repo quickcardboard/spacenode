@@ -27,7 +27,7 @@ const btn = (a: string, label: string, opts: { off?: string | null; cls?: string
 
 export function token(g: Game, sp: Spec, big = false) {
   const d = SPECS[sp.def], cmd = sp.id === g.cmdSpec;
-  return `<span class="tok ${big ? 'big' : ''} ${cmd ? 'cmd' : ''}" style="--c:${cmd ? '#ffd166' : d.color}">${cmd ? '★' : d.tag}</span>`;
+  return `<span class="tok ${big ? 'big' : ''} ${cmd ? 'cmd' : ''}" style="--c:${cmd ? '#e8bd55' : d.color}">${cmd ? '★' : d.tag}</span>`;
 }
 const defTok = (id: string) => `<span class="tok big" style="--c:${SPECS[id].color}">${SPECS[id].tag}</span>`;
 
@@ -267,7 +267,7 @@ export function panel(app: App): string {
   if (app.sel.type === 'ship') { const s = shipById(g, app.sel.id); if (!s || s.at >= 0 || !shipSeen(g, s)) { app.sel = null; return ''; } return shipPanel(app, s); }
   const n = g.nodes[app.sel.id], k = known(g, n);
   const sub = `${n.citadel ? 'Citadel' : n.kind === 'planet' ? ['Small', 'Medium', 'Large'][n.size] + ' planet' : n.home ? 'Home station' : 'Station'} · ${k.tier === 'detected' ? 'Unidentified' : k.owner === 0 ? 'Neutral' : esc(sideName(g, k.owner))}`;
-  const col = k.tier === 'detected' ? '#5d6875' : k.owner === 0 ? '#b9b1a2' : sideColor(g, k.owner);
+  const col = k.tier === 'detected' ? '#56617c' : k.owner === 0 ? '#8f95a6' : sideColor(g, k.owner);
   return `<div class="phead"><div><h2><span class="dot" style="background:${col}"></span>${esc(n.name)}</h2><small>${sub}</small></div><button class="btn ico" data-a="close">✕</button></div>${n.owner === PLAYER ? ownNode(app, n) : foreignNode(app, n)}`;
 }
 
@@ -288,7 +288,7 @@ export function menu(app: App): string {
     for (const id in TECHS) { const t = TECHS[id]; if (t.branch !== last) { body += `<h3>${t.branch}</h3>`; last = t.branch; } const have = side.techs.includes(id), p = side.techProg[id]; body += `<div class="tech ${have ? 'done' : ''}"><b>${have ? '✓ ' : ''}${t.name}</b><small>${t.desc}${p !== undefined ? ` · ${Math.round((p / TECH_TIME[t.tier]) * 100)}%` : ''}</small></div>`; }
   } else if (app.menu === 'intel') {
     const a = ARCHONS[g.sides[g.archon].fac], m = g.mob;
-    body = `<div class="fac" style="--c:#ff5fa2"><b>✦ ${a.name} ${a.title}</b><p>${a.desc}</p><p>Mobilization stage ${m.stage}/5${m.surge ? ` · total war +${m.surge}` : ''} (${Math.round(m.prog * 100)}% to the next). Each stage enlarges Coalition reserves and offensives and gives every faction new technology. Capturing enemy nodes sets it back; a captured Warlord removes a whole stage.</p><p>Citadel Aegis: ${aegis(g, g.nodes[g.citadel])} (${g.factions.filter(o => !g.sides[o].broken).length} layers).</p></div>`;
+    body = `<div class="fac" style="--c:#e07aa0"><b>✦ ${a.name} ${a.title}</b><p>${a.desc}</p><p>Mobilization stage ${m.stage}/5${m.surge ? ` · total war +${m.surge}` : ''} (${Math.round(m.prog * 100)}% to the next). Each stage enlarges Coalition reserves and offensives and gives every faction new technology. Capturing enemy nodes sets it back; a captured Warlord removes a whole stage.</p><p>Citadel Aegis: ${aegis(g, g.nodes[g.citadel])} (${g.factions.filter(o => !g.sides[o].broken).length} layers).</p></div>`;
     for (const o of g.factions) {
       const s = g.sides[o], f = FACTIONS[s.fac];
       const knownNodes = g.nodes.filter(n => g.intel[n.id].snap?.owner === o || (g.vis[n.id] === 2 && n.owner === o));
@@ -368,7 +368,7 @@ export function help(): string {
   <p><b>Economy.</b> Generators power mines (2 each). Mines need a Drone each to run. A node builds one thing at a time, and a station that is building is not making Drones. Research has its own lane.</p>
   <p><b>Specialists.</b> Every neutral planet you capture lets you recruit 1 of 3. They only work where they stand, three to a node or ship, and they are captured if their node or ship falls.</p>
   <p><b>The Coalition.</b> Three factions and an Archon. The mobilization meter fills with time; each stage brings larger offensives. Capturing enemy nodes sets it back. Capture a faction's capital ♛ to take its Warlord, gain a signature specialist and a rare relic, and strip a layer of the Citadel's Aegis.</p>
-  <p><b>Controls.</b> Drag to pan, pinch or scroll to zoom. Space pauses, 1/2/3 set speed, M opens the menu, H returns home, Esc cancels.</p>
+  <p><b>Controls.</b> Drag, or use the arrow keys or WASD, to scroll the map. Pinch or scroll to zoom. Space pauses, 1/2/3 set speed, M opens the menu, H returns home, Esc cancels.</p>
   ${btn('helpclose', 'Got it', { cls: 'wide hot' })}</div>`;
 }
 void STRUCT_DEF;
