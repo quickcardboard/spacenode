@@ -17,7 +17,7 @@ export function newGame(seed: number, threat = 0): Game {
   const g: Game = {
     v: 1, seed, rng: seed | 0, t: 0, tick: 0, modV: 1, threat, w: W, h: H,
     nodes: [], ships: [], specs: [], sides: {}, factions: [2, 3, 4], archon: 5,
-    mob: { stage: 1, prog: 0, nextOff: CFG.graceSecs, turn: 0, surge: 0 }, offs: [], pending: [], log: [],
+    mob: { stage: 1, prog: 0, nextOff: CFG.graceSecs, turn: 0, surge: 0 }, offs: [], corridors: [], pending: [], log: [],
     cmdSpec: -1, cmdLostT: -1, intel: [], vis: [], result: null, resultWhy: '',
     stats: { captures: 0, nodesLost: 0, battles: 0, dronesLost: 0, dronesMade: 0, shipsLost: 0, specs: 0, specsLost: 0, relics: 0, techs: 0, events: 0, warlords: 0, ultMade: 0 },
     nextId: 1, home: 0, citadel: 1,

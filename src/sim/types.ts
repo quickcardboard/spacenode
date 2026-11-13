@@ -4,7 +4,7 @@ export type Mods = Record<string, number>;
 export type Fx = any[]; // ['ult', 20] | ['relic','rare'] | ... see events in content.ts
 
 export interface Buff { k: string; v: number; until: number }
-export interface Task { kind: 'build' | 'ship'; id: string; left: number; total: number; cost: number }
+export interface Task { kind: 'build' | 'ship' | 'corridor'; id: string; left: number; total: number; cost: number }
 export interface Hold { until: number; total: number; need: number; fx: Fx[]; name: string }
 
 export interface GNode {
@@ -31,7 +31,11 @@ export interface Ship {
   loadUntil: number; // >0 while loading before departure
   redirected: boolean; back: boolean; // back = returning empty-handed
   off: boolean; // part of a coalition offensive
+  lane?: boolean; // a convoy travelling through a corridor rather than a ship
+  unload?: boolean; // cargo still to be unloaded at the node it reached
 }
+
+export interface Corridor { a: number; b: number; owner: number; until: number } // until 0 = permanent
 
 export interface Spec {
   id: number; def: string; owner: number;
@@ -77,6 +81,7 @@ export interface Game {
   archon: number; // owner id
   mob: { stage: number; prog: number; nextOff: number; turn: number; surge: number };
   offs: Offensive[];
+  corridors: Corridor[];
   pending: Pending[]; log: LogEntry[];
   cmdSpec: number; cmdLostT: number; // commander spec id, time captured (-1 if free)
   intel: Intel[]; vis: number[];

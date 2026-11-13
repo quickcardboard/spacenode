@@ -4,17 +4,20 @@ export const CFG = {
   dt: 0.1, // fixed step: 10 updates per simulated second
   shipSpeed: 1.2, // map units per second
   loadTime: 6,
-  startUlt: 35, startDrones: 12, baseIncome: 4, // Ultanium per minute
-  droneCap: 120,
+  startUlt: 40, startDrones: 12, baseIncome: 6, // Ultanium per minute
+  // Drone cap: a base plus a share for every node you hold
+  capBase: 65, capPlanet: 7, capStation: 17,
   batch: 5, batchTime: 30,
   shipCost: 30, shipTime: 100,
   natRegenSecs: 20,
   natBySize: [4, 7, 11],
-  capBySize: [6, 9, 13], // Ultanium per minute ceiling
-  mineBase: 3.2, sizeMult: [1, 1.5, 2.2], mineDim: [1, 0.75, 0.5, 0.3, 0.3],
+  capBySize: [9, 13, 19], // Ultanium per minute ceiling
+  mineBase: 4.4, sizeMult: [1, 1.5, 2.2], mineDim: [1, 0.75, 0.5, 0.3, 0.3],
   mineSlots: [2, 3, 4], minesPerGen: 2,
   fovInner: { planet: [42, 46, 52], station: 48 },
   fovOuter: { planet: [72, 78, 88], station: 82 },
+  shipFov: [26, 46], // inner (full intelligence) and outer (detection) radius around your ships
+  corridorCost: 40, corridorTime: 110, corridorRange: 150, corridorMax: 2, corridorSpeed: 2,
   specSlots: 3,
   rescueSecs: 150,
   ransom: 15, recruitCost: 40, convertSecs: 60,

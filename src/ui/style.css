@@ -98,3 +98,28 @@ div.relic{background:var(--card2);border:2px solid;border-radius:12px;padding:8p
 .title .btn{align-items:center;font-size:16px;min-height:48px}.lv{margin:14px 0 6px;display:flex;flex-direction:column;gap:6px;align-items:center}.lv .chips{margin:0;justify-content:center}.lv .chip{padding:5px 12px}
 .help p{font-size:14px}
 @media (max-width:480px){.hudrow{gap:4px}.stat{padding:3px 6px}.stat b{font-size:13px}.stat small{font-size:9px}.stat.mob{min-width:74px;flex:1}.btn.ico{min-width:34px;padding:6px 4px;font-size:13px}.stat.time{display:none}}
+
+/* ability deck: the first thing in a node or ship panel */
+.deckrow{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin:2px 0 6px}
+.deck{position:relative;overflow:hidden;display:flex;gap:8px;align-items:center;text-align:left;padding:8px 10px;border-radius:14px;border:2px solid var(--gold);background:linear-gradient(90deg,rgba(232,189,85,.22) var(--p),rgba(232,189,85,.06) var(--p));min-height:58px}
+.deck .tok{width:34px;height:34px;font-size:13px}
+.deck span{display:flex;flex-direction:column;min-width:0}
+.deck b{font-size:16px;color:var(--gold)}
+.deck small{font-weight:700;color:var(--ink)}
+.deck i{font-style:normal;font-size:11px;color:var(--dim);margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.deck b{font-size:15px}
+.laterrow{display:flex;flex-wrap:wrap;gap:4px 10px;margin:0 0 8px}.later{font-size:12px;color:var(--dim);display:inline-flex;gap:5px;align-items:center;cursor:pointer}.later .tok{width:18px;height:18px;font-size:8px}
+.deck.on{box-shadow:0 0 0 3px rgba(232,189,85,.25)}
+.deck.on:active{transform:translateY(1px)}
+.deck.off{border-color:var(--line)}.deck.off b{color:var(--ink)}
+/* team strip: three slots at the node and on each parked ship */
+.team .slots{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.slot{position:relative;min-height:74px;border:2px dashed var(--line);border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:6px 4px;text-align:center}
+.slot.full{border-style:solid;background:var(--card);cursor:pointer}
+.slot small{font-size:10px;line-height:1.1}
+.slot .mv{position:absolute;top:4px;right:4px;width:26px;height:26px;border-radius:8px;background:var(--me);color:#16302a;font-weight:900;font-size:12px}
+/* tooltip */
+#tip{position:fixed;z-index:20;display:none;max-width:290px;background:rgba(43,51,80,.98);border:1px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:0 10px 30px rgba(0,0,0,.45);pointer-events:none;font-size:13px}
+#tip.open{display:block}
+#tip p{margin:5px 0;color:#cfd4f2}#tip b{color:var(--gold)}
+.tiphead{display:flex;gap:10px;align-items:center}.tiphead div{display:flex;flex-direction:column}.tiphead b{color:var(--ink)!important;font-size:14px}

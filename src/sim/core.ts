@@ -74,7 +74,10 @@ export function droneCap(g: Game, owner: number): number {
   const side = g.sides[owner];
   if (!side) return BIG;
   const m = sideMods(g, owner).droneCap || 0;
-  return side.kind === 'player' ? CFG.droneCap + m : side.capBase + 14 * (g.mob.stage + g.mob.surge) + m;
+  if (side.kind !== 'player') return side.capBase + 22 * (g.mob.stage + g.mob.surge) + m;
+  let cap = CFG.capBase + m;
+  for (const n of g.nodes) if (n.owner === owner) cap += n.kind === 'planet' ? CFG.capPlanet : CFG.capStation;
+  return cap;
 }
 
 // ---------------------------------------------------------------- vision
@@ -86,7 +89,8 @@ export function radii(g: Game, n: GNode): [number, number] {
   return [i * f, o * f * (1 + 0.3 * (n.b.sensor || 0))];
 }
 export function updateVision(g: Game) {
-  const mine = g.nodes.filter(n => n.owner === PLAYER).map(n => ({ n, r: radii(g, n) }));
+  const mine: { n: { x: number; y: number }; r: [number, number] }[] = g.nodes.filter(n => n.owner === PLAYER).map(n => ({ n, r: radii(g, n) }));
+  for (const s of g.ships) if (s.owner === PLAYER && !s.lane) mine.push({ n: s, r: shipRadii(g, s) });
   for (const n of g.nodes) {
     let v = 0;
     if (n.owner === PLAYER) v = 2;
@@ -107,6 +111,10 @@ export function updateVision(g: Game) {
     }
   }
 }
+export function shipRadii(g: Game, s: Ship): [number, number] {
+  const f = 1 + (shipMods(g, s).fov || 0);
+  return [CFG.shipFov[0] * f, CFG.shipFov[1] * f];
+}
 /** 0 = unseen, 1 = seen, 2 = strength known. */
 export function shipSeen(g: Game, s: Ship): number {
   if (s.owner === PLAYER) return 2;
@@ -115,6 +123,12 @@ export function shipSeen(g: Game, s: Ship): number {
   for (const n of g.nodes) {
     if (n.owner !== PLAYER) continue;
     const [ri2, ro] = radii(g, n), d = dist(s, n);
+    if (d <= ri2) return 2;
+    if (d <= ro && !stealth) best = 1;
+  }
+  for (const o of g.ships) {
+    if (o.owner !== PLAYER || o.lane) continue;
+    const [ri2, ro] = shipRadii(g, o), d = dist(s, o);
     if (d <= ri2) return 2;
     if (d <= ro && !stealth) best = 1;
   }
@@ -344,6 +358,11 @@ export function capture(g: Game, n: GNode, s: Ship, r: Battle, sm: Mods) {
     if (att.length) { const k = pick(g, att); n.b[k]--; }
   }
   const wasCapital = n.capital && g.sides[old]?.kind === 'faction' && !g.sides[old].broken;
+  if (g.corridors.some(c => c.a === n.id || c.b === n.id)) {
+    g.corridors = g.corridors.filter(c => c.a !== n.id && c.b !== n.id);
+    if (old === PLAYER) log(g, `Corridors to ${n.name} collapsed`, 'bad', n.id);
+  }
+  for (const o of g.nodes) if (o.owner === old) { o.queue = o.queue.filter(t => !(t.kind === 'corridor' && +t.id === n.id)); if (o.lane && o.lane.kind === 'corridor' && +o.lane.id === n.id) { g.sides[old] && (g.sides[old].ult += o.lane.cost); o.lane = o.queue.shift() || null; } }
   n.owner = now; n.drones = r.surv; n.nat = 0; n.lane = null; n.queue = []; n.research = null; n.prod = 0; n.hold = null; n.conv = null; n.buffs = [];
   s.at = n.id; s.to = -1; s.drones = 0; s.x = n.x; s.y = n.y; s.buffs = []; s.seq = g.nextId++; s.off = false;
   const side = g.sides[now];
@@ -390,7 +409,8 @@ function repel(g: Game, n: GNode, s: Ship, r: Battle, sm: Mods) {
 export function arrive(g: Game, s: Ship) {
   const n = g.nodes[s.to];
   s.x = n.x; s.y = n.y;
-  if (n.owner === s.owner) { s.at = n.id; s.to = -1; s.buffs = []; s.seq = g.nextId++; s.back = false; s.off = false; return; }
+  if (s.lane) { convoyArrive(g, s, n); return; }
+  if (n.owner === s.owner) { s.at = n.id; s.to = -1; s.buffs = []; s.seq = g.nextId++; s.back = false; s.off = false; s.unload = true; return; }
   if (s.drones <= 0) {
     if (s.owner === PLAYER && !s.specs.length && !s.back) {
       n.buffs.push({ k: 'scan', v: 1, until: g.t + 20 });
@@ -410,11 +430,69 @@ export function arrive(g: Game, s: Ship) {
   else repel(g, n, s, r, sm);
 }
 
+function convoyArrive(g: Game, s: Ship, n: GNode) {
+  if (n.owner !== s.owner && s.drones > 0) {
+    const sm = shipMods(g, s), r = calcBattle(g, s.drones, sm, n, nodeMods(g, n));
+    if (r.win) capture(g, n, s, r, sm); else { repel(g, n, s, r, sm); return; }
+  } else if (n.owner !== s.owner) { destroyShip(g, s, g.sides[n.owner] ? n : null, n.owner); return; }
+  if (!g.ships.includes(s)) return;
+  n.drones += s.drones; s.drones = 0;
+  for (const id of s.specs.slice()) toNode(g, g.specs[id], n);
+  g.ships = g.ships.filter(o => o !== s);
+}
+
+// ---------------------------------------------------------------- corridors
+export const corridorsAt = (g: Game, id: number) => g.corridors.filter(c => c.a === id || c.b === id);
+export const corridorBetween = (g: Game, a: number, b: number) => g.corridors.find(c => (c.a === a && c.b === b) || (c.a === b && c.b === a));
+const pendingCorridors = (g: Game, id: number) => g.nodes.reduce((k, o) => k + [o.lane, ...o.queue].filter(t => t && t.kind === 'corridor' && (o.id === id || +t.id === id)).length, 0);
+export function canCorridor(g: Game, a: GNode, b: GNode): string | null {
+  if (a.id === b.id) return 'Pick a different node';
+  if (a.owner !== PLAYER || b.owner !== PLAYER) return 'Both ends must be your nodes';
+  if (dist(a, b) > CFG.corridorRange) return `Too far (corridors reach ${CFG.corridorRange})`;
+  if (corridorBetween(g, a.id, b.id) || [a.lane, ...a.queue, b.lane, ...b.queue].some(t => t && t.kind === 'corridor' && (+t.id === a.id || +t.id === b.id))) return 'Already linked or being built';
+  for (const n of [a, b]) if (corridorsAt(g, n.id).filter(c => !c.until).length + pendingCorridors(g, n.id) >= CFG.corridorMax) return `${n.name} already has ${CFG.corridorMax} corridors`;
+  if (a.queue.length >= 4) return 'Queue full';
+  if (g.sides[PLAYER].ult < CFG.corridorCost) return 'Not enough Ultanium';
+  return null;
+}
+export function startCorridor(g: Game, a: GNode, b: GNode): string | null {
+  const err = canCorridor(g, a, b);
+  if (err) return err;
+  g.sides[PLAYER].ult -= CFG.corridorCost;
+  const t = CFG.corridorTime * (1 - Math.min(0.6, nodeMods(g, a).corridor || 0));
+  enqueue(a, { kind: 'corridor', id: String(b.id), left: t, total: t, cost: CFG.corridorCost });
+  return null;
+}
+/** Send Drones and specialists through a corridor: no ship, no loading, double speed. */
+export function transfer(g: Game, a: GNode, b: GNode, drones: number, specIds: number[]): string | null {
+  if (a.owner !== PLAYER || b.owner !== PLAYER) return 'Both ends must be your nodes';
+  if (!corridorBetween(g, a.id, b.id)) return 'No corridor between these nodes';
+  drones = Math.max(0, Math.min(a.drones, Math.floor(drones)));
+  specIds = specIds.filter(i => a.specs.includes(i));
+  if (!drones && !specIds.length) return 'Nothing to send';
+  if (specIds.length > slots(g, PLAYER)) return `At most ${slots(g, PLAYER)} specialists at once`;
+  const s = newShip(g, PLAYER, a);
+  s.lane = true; s.at = -1; s.to = b.id; s.from = a.id; s.drones = drones; a.drones -= drones;
+  for (const i of specIds) toShip(g, g.specs[i], s);
+  g.modV++;
+  return null;
+}
+/** Move one specialist between a node and a ship sitting at it. */
+export function swapSpec(g: Game, sp: Spec, s: Ship): string | null {
+  if (s.at < 0 || s.loadUntil > 0) return 'Ship is not parked here';
+  const n = g.nodes[s.at];
+  if (n.owner !== sp.owner) return 'Not your node';
+  const cap = slots(g, sp.owner);
+  if (sp.node === n.id && !sp.held) { if (s.specs.length >= cap) return `The ship holds ${cap} specialists`; toShip(g, sp, s); return null; }
+  if (sp.ship === s.id) { if (n.specs.length >= cap) return `${n.name} holds ${cap} specialists`; toNode(g, sp, n); s.unload = false; return null; }
+  return 'Specialist is not here';
+}
+
 // ---------------------------------------------------------------- launching
 export function canTarget(g: Game, to: GNode): boolean {
   return to.owner === PLAYER || g.vis[to.id] >= 1 || ((sideMods(g, PLAYER).remember || 0) > 0 && g.intel[to.id].seen >= 1);
 }
-export function shipSpeed(g: Game, s: Ship) { return CFG.shipSpeed * Math.max(0.3, 1 + (shipMods(g, s).speed || 0)); }
+export function shipSpeed(g: Game, s: Ship) { return CFG.shipSpeed * (s.lane ? CFG.corridorSpeed : 1) * Math.max(0.3, 1 + (shipMods(g, s).speed || 0)); }
 export function eta(g: Game, s: Ship, to: GNode) { return dist(s, to) / shipSpeed(g, s); }
 
 export function launch(g: Game, s: Ship, to: GNode, drones: number, specIds: number[]): string | null {
@@ -596,6 +674,10 @@ function completeTask(g: Game, n: GNode, t: Task) {
   if (t.kind === 'build') {
     n.b[t.id] = (n.b[t.id] || 0) + 1;
     if (n.owner === PLAYER) log(g, `${BUILD[t.id].name} finished at ${n.name}`, 'info', n.id);
+  } else if (t.kind === 'corridor') {
+    const b = g.nodes[+t.id];
+    if (b.owner === n.owner && !corridorBetween(g, n.id, b.id)) { g.corridors.push({ a: n.id, b: b.id, owner: n.owner, until: 0 }); if (n.owner === PLAYER) log(g, `Corridor open: ${n.name} to ${b.name}`, 'good', n.id); }
+    else g.sides[n.owner].ult += t.cost;
   } else {
     newShip(g, n.owner, n);
     if (n.owner === PLAYER) log(g, `Ship launched from the yards at ${n.name}`, 'info', n.id);
@@ -670,10 +752,11 @@ export function coreStep(g: Game) {
       const n = g.nodes[s.at];
       if (s.loadUntil > 0) {
         if (g.t >= s.loadUntil) { s.loadUntil = 0; s.at = -1; s.x = n.x; s.y = n.y; }
-      } else if (n.owner === s.owner && (s.drones > 0 || s.specs.length) && isDocked(g, s)) {
+      } else if (s.unload && n.owner === s.owner && isDocked(g, s)) {
         n.drones += s.drones; s.drones = 0;
         const cap = slots(g, s.owner);
         for (const id of s.specs.slice()) if (n.specs.length < cap) toNode(g, g.specs[id], n);
+        s.unload = false;
       }
       continue;
     }
@@ -681,6 +764,8 @@ export function coreStep(g: Game) {
     if (d <= step) arrive(g, s);
     else { s.x += (to.x - s.x) / d * step; s.y += (to.y - s.y) / d * step; }
   }
+
+  if (g.corridors.some(c => c.until && c.until <= g.t)) g.corridors = g.corridors.filter(c => !c.until || c.until > g.t);
 
   // Commander custody and defeat
   const cmd = g.specs[g.cmdSpec];

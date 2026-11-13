@@ -1,9 +1,9 @@
 import type { Game, Spec, GNode, Ship } from './types';
 import { PLAYER } from './types';
 import { SPECS, ARCHS, TECHS, type AbilityDef } from './content';
-import { BUILD } from './config';
+import { BUILD, CFG } from './config';
 import { sideMods } from './mods';
-import { dist, shipById, homeOf, toNode, log, updateVision, startBuild, natMax, totalDrones, droneCap, capture, calcBattle, convert, BIG, slots } from './core';
+import { dist, shipById, homeOf, toNode, log, updateVision, startBuild, natMax, totalDrones, droneCap, capture, calcBattle, convert, BIG, slots, corridorBetween } from './core';
 
 export function abilitiesOf(sp: Spec): AbilityDef[] {
   const out: AbilityDef[] = [];
@@ -121,6 +121,12 @@ const IMPL: Record<string, Impl> = {
   pressgang: c => addDrones(c, Math.min(10, Math.max(1, Math.floor(c.here.drones * 0.2)))),
   insight: resetCds,
   eureka: research(60),
+  rapidlink: c => {
+    const a = c.n!, b = c.t!;
+    if (corridorBetween(c.g, a.id, b.id)) return 'Already linked';
+    if (dist(a, b) > CFG.corridorRange * 1.5) return 'Too far for a temporary corridor';
+    c.g.corridors.push({ a: a.id, b: b.id, owner: c.sp.owner, until: c.g.t + 60 }); return null;
+  },
 };
 void startBuild; void convert; void slots; void TECHS;
 
@@ -135,7 +141,8 @@ export function abilityCheck(g: Game, sp: Spec, a: AbilityDef, target: GNode | n
   if (a.target !== 'self') {
     if (!target) return 'Pick a target';
     const v = g.vis[target.id];
-    if (a.target === 'node') { if (v < 1) return 'Target must be detected'; if (target.owner === PLAYER) return 'Pick a node you do not own'; }
+    if (a.target === 'own') { if (target.owner !== sp.owner) return 'Pick one of your nodes'; if (target.id === sp.node) return 'Pick a different node'; }
+    else if (a.target === 'node') { if (v < 1) return 'Target must be detected'; if (target.owner === PLAYER) return 'Pick a node you do not own'; }
     else {
       if (v < 2) return 'Target must be fully identified';
       if (target.owner === PLAYER) return 'Pick a node you do not own';

@@ -6,13 +6,13 @@ import { newGame } from './sim/mapgen';
 import { step, exec, type Cmd } from './sim/sim';
 import { canTarget, shipById, shipSeen, isDocked, updateVision } from './sim/core';
 import { abilitiesOf, abilityCheck } from './sim/abilities';
-import { draw, nodeR, known, toScreen, nodeScreen, TILT, type Cam } from './ui/render';
-import { hud, panel, menu, modal, title, help, launchPreview, launchPool, minToWin, type App } from './ui/ui';
+import { draw, nodeR, known, toScreen, nodeScreen, spots, TILT, type Cam } from './ui/render';
+import { hud, panel, menu, modal, title, help, launchPreview, launchPool, minToWin, specTip, type App } from './ui/ui';
 
 const SAVE = 'spacenodes.save.v1', META = 'spacenodes.meta.v1';
 const $ = (id: string) => document.getElementById(id)!;
 const canvas = $('map') as HTMLCanvasElement, ctx = canvas.getContext('2d')!;
-const elHud = $('hud'), elPanel = $('panel'), elOverlay = $('overlay'), elToasts = $('toasts');
+const elHud = $('hud'), elPanel = $('panel'), elOverlay = $('overlay'), elToasts = $('toasts'), elTip = $('tip');
 
 const store = { get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } }, del: (k: string) => { try { localStorage.removeItem(k); } catch { /* storage unavailable */ } } };
 
@@ -75,7 +75,7 @@ function act(a: string, el: HTMLElement) {
   const g = app.g, selNode = app.sel?.type === 'node' ? app.sel.id : -1;
   switch (name) {
     case 'newrun': case 'again': startRun(newGame((Date.now() % 2147483647) | 0, app.newThreat)); ended = false; break;
-    case 'continue': { const raw = store.get(SAVE); if (raw) { try { const s = JSON.parse(raw) as Game; updateVision(s); startRun(s); ended = false; } catch { store.del(SAVE); app.hasSave = false; } } break; }
+    case 'continue': { const raw = store.get(SAVE); if (raw) { try { const s = JSON.parse(raw) as Game; s.corridors = s.corridors || []; updateVision(s); startRun(s); ended = false; } catch { store.del(SAVE); app.hasSave = false; } } break; }
     case 'title': app.screen = 'title'; app.g = null; break;
     case 'threat': app.newThreat = +args[0]; break;
     case 'help': helpFrom = app.screen; app.screen = 'help'; app.menu = null; break;
@@ -100,6 +100,9 @@ function act(a: string, el: HTMLElement) {
     case 'send': app.mode = { k: 'launch', ship: +args[0] }; app.launch = null; break;
     case 'from': openLaunch(+args[0], selNode); break;
     case 'redirect': app.mode = { k: 'redirect', ship: +args[0] }; break;
+    case 'corridorpick': app.mode = { k: 'corridor', from: selNode }; break;
+    case 'swap': run({ c: 'swap', spec: +args[0], ship: +args[1] }); break;
+    case 'lane': { const from = g!.nodes[selNode]; app.launch = { ship: -1, from: selNode, to: +args[0], drones: Math.floor(from.drones / 2), specs: [], lane: true }; break; }
     case 'ability': {
       const sp = g!.specs[+args[0]], ab = abilitiesOf(sp).find(x => x.id === args[1])!;
       if (ab.target === 'self') run({ c: 'ability', spec: sp.id, id: ab.id, target: -1 });
@@ -112,18 +115,21 @@ function act(a: string, el: HTMLElement) {
       break;
     }
     case 'lq': {
-      const L = app.launch!, s = shipById(g!, L.ship)!, pool = launchPool(g!, s);
+      const L = app.launch!, pool = L.lane ? g!.nodes[L.from!].drones : launchPool(g!, shipById(g!, L.ship)!);
       L.drones = args[0] === 'all' ? pool : args[0] === 'half' ? Math.ceil(pool / 2) : args[0] === 'none' ? 0 : minToWin(g!, L) || pool;
       break;
     }
     case 'lcancel': app.launch = null; break;
-    case 'lconfirm': { const L = app.launch!; if (run({ c: 'launch', ship: L.ship, to: L.to, drones: L.drones, specs: L.specs })) { app.launch = null; app.sel = null; } break; }
+    case 'lconfirm': { const L = app.launch!; if (L.lane) { if (run({ c: 'transfer', from: L.from!, to: L.to, drones: L.drones, specs: L.specs })) app.launch = null; break; } if (run({ c: 'launch', ship: L.ship, to: L.to, drones: L.drones, specs: L.specs })) { app.launch = null; app.sel = null; } break; }
   }
   void el;
   dirty = true;
 }
 
 document.addEventListener('click', e => {
+  const tipEl = (e.target as HTMLElement).closest('[data-tip]') as HTMLElement | null;
+  if (tipEl && !(e.target as HTMLElement).closest('button')) { const r = tipEl.getBoundingClientRect(); showTip(+tipEl.dataset.tip!, r.left + r.width / 2, r.top); return; }
+  if (!(e.target as HTMLElement).closest('#tip')) hideTip();
   const el = (e.target as HTMLElement).closest('[data-a]') as HTMLElement | null;
   if (!el || (el as HTMLButtonElement).disabled) return;
   if (el instanceof HTMLInputElement && el.type !== 'checkbox') return;
@@ -179,16 +185,40 @@ function tap(px: number, py: number) {
     const m = app.mode;
     if (m.k === 'launch') openLaunch(m.ship, hit.id);
     else if (m.k === 'redirect') { if (run({ c: 'redirect', ship: m.ship, to: hit.id })) app.mode = null; }
+    else if (m.k === 'corridor') { if (run({ c: 'corridor', from: m.from, to: hit.id })) { app.mode = null; app.tab = 'info'; } }
     else if (run({ c: 'ability', spec: m.spec, id: m.id, target: hit.id })) app.mode = null;
     dirty = true;
     return;
   }
   if (!hit) { if (!app.launch) app.sel = null; dirty = true; return; }
-  if (app.launch && hit.type === 'node') { const s = shipById(g, app.launch.ship); if (s && s.at !== hit.id) return openLaunch(app.launch.ship, hit.id); }
+  if (app.launch && !app.launch.lane && hit.type === 'node') { const s = shipById(g, app.launch.ship); if (s && s.at !== hit.id) return openLaunch(app.launch.ship, hit.id); }
   select(hit.type, hit.id);
 }
+// ------------------------------------------------------------------ specialist tooltips
+let tipFor = -1, pressT = 0, longPressed = false;
+function spotAt(px: number, py: number) {
+  let best = null as null | (typeof spots)[number], bd = 1e9;
+  for (const s of spots) { const d = Math.hypot(s.x - px, s.y - py); if (d < s.r + 6 && d < bd) { bd = d; best = s; } }
+  return best;
+}
+function showTip(spec: number, x: number, y: number) {
+  if (!app.g) return;
+  if (tipFor !== spec) { elTip.innerHTML = specTip(app.g, app.g.specs[spec]); tipFor = spec; }
+  elTip.className = 'open';
+  const r = elTip.getBoundingClientRect();
+  elTip.style.left = `${Math.max(8, Math.min(W - r.width - 8, x - r.width / 2))}px`;
+  elTip.style.top = `${y - r.height - 18 < 60 ? y + 22 : y - r.height - 18}px`;
+}
+function hideTip() { if (tipFor >= 0 || elTip.className) { elTip.className = ''; tipFor = -1; } }
+
 canvas.addEventListener('pointerdown', e => {
   canvas.setPointerCapture(e.pointerId);
+  hideTip(); longPressed = false; clearTimeout(pressT);
+  if (e.pointerType !== 'mouse') pressT = window.setTimeout(() => {
+    if (ptrs.size !== 1 || moved || !downAt) return;
+    const s = spotAt(downAt.x, downAt.y);
+    if (s) { longPressed = true; showTip(s.spec, s.x, s.y); if (navigator.vibrate) navigator.vibrate(12); }
+  }, 420);
   ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (ptrs.size === 1) { downAt = { x: e.clientX, y: e.clientY, t: performance.now() }; moved = false; }
   if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = Math.hypot(a.x - b.x, a.y - b.y); moved = true; }
@@ -196,7 +226,14 @@ canvas.addEventListener('pointerdown', e => {
 });
 canvas.addEventListener('pointermove', e => {
   const p = ptrs.get(e.pointerId);
-  if (!p) { if (app.g && app.screen === 'game') { const h = pick(e.clientX, e.clientY); hover = h && h.type === 'node' ? h.id : -1; canvas.style.cursor = h ? 'pointer' : 'grab'; } return; }
+  if (!p) {
+    if (app.g && app.screen === 'game') {
+      const s = e.pointerType === 'mouse' ? spotAt(e.clientX, e.clientY) : null;
+      if (s) showTip(s.spec, s.x, s.y); else hideTip();
+      const h = pick(e.clientX, e.clientY); hover = h && h.type === 'node' ? h.id : -1; canvas.style.cursor = h || s ? 'pointer' : 'grab';
+    }
+    return;
+  }
   const dx = e.clientX - p.x, dy = e.clientY - p.y;
   p.x = e.clientX; p.y = e.clientY;
   if (ptrs.size === 1) {
@@ -210,7 +247,8 @@ canvas.addEventListener('pointermove', e => {
 });
 const up = (e: PointerEvent) => {
   const had = ptrs.delete(e.pointerId);
-  if (had && ptrs.size === 0 && !moved && downAt && app.g && app.screen === 'game') tap(e.clientX, e.clientY);
+  clearTimeout(pressT);
+  if (had && ptrs.size === 0 && !moved && !longPressed && downAt && app.g && app.screen === 'game') tap(e.clientX, e.clientY);
   if (ptrs.size < 2) pinch = 0;
 };
 canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);

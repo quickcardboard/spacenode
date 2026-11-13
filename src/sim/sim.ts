@@ -1,6 +1,6 @@
 import type { Game } from './types';
 import { PLAYER } from './types';
-import { coreStep, startBuild, startShip, cancelTask, startResearch, launch, redirect, choose, ransom, shipById } from './core';
+import { coreStep, startBuild, startShip, cancelTask, startResearch, launch, redirect, choose, ransom, shipById, startCorridor, transfer, swapSpec } from './core';
 import { aiTick } from './ai';
 import { useAbility } from './abilities';
 import { EVENTS } from './content';
@@ -24,7 +24,10 @@ export type Cmd =
   | { c: 'ability'; spec: number; id: string; target: number }
   | { c: 'choose'; idx: number }
   | { c: 'ransom'; spec: number; recruit: boolean }
-  | { c: 'event'; node: number };
+  | { c: 'event'; node: number }
+  | { c: 'corridor'; from: number; to: number }
+  | { c: 'transfer'; from: number; to: number; drones: number; specs: number[] }
+  | { c: 'swap'; spec: number; ship: number };
 
 /** Every player action goes through here. Returns an error message, or null on success. */
 export function exec(g: Game, c: Cmd): string | null {
@@ -41,6 +44,9 @@ export function exec(g: Game, c: Cmd): string | null {
     case 'ability': { const sp = g.specs[c.spec]; if (!sp || sp.owner !== PLAYER) return 'Not your specialist'; return useAbility(g, sp, c.id, c.target >= 0 ? g.nodes[c.target] : null); }
     case 'choose': return choose(g, c.idx);
     case 'ransom': { const sp = g.specs[c.spec]; return sp ? ransom(g, sp, c.recruit) : 'Unknown prisoner'; }
+    case 'corridor': return startCorridor(g, g.nodes[c.from], g.nodes[c.to]);
+    case 'transfer': return transfer(g, g.nodes[c.from], g.nodes[c.to], c.drones, c.specs);
+    case 'swap': { const sp = g.specs[c.spec], s = shipById(g, c.ship); if (!sp || sp.owner !== PLAYER || !s || s.owner !== PLAYER) return 'Not yours'; return swapSpec(g, sp, s); }
     case 'event': { const n = own(c.node); if (!n || !n.event) return 'No event here'; g.pending.push({ kind: 'event', node: n.id, opts: [], title: EVENTS[n.event].name, event: n.event }); return null; }
   }
 }

@@ -14,7 +14,7 @@ import type { Mods, Fx } from './types';
 
 export interface AbilityDef {
   id: string; name: string; cd: number; desc: string;
-  target: 'self' | 'node' | 'ident' | 'neutral' | 'enemy';
+  target: 'self' | 'node' | 'ident' | 'neutral' | 'enemy' | 'own';
   at: 'any' | 'node' | 'ship' | 'planet';
 }
 export interface SpecDef {
@@ -115,6 +115,10 @@ S({ id: 'navigator', name: 'Navigator', tag: 'Na', color: C.fleet, role: 'Launch
 S({ id: 'prospector', name: 'Prospector', tag: 'Pr', color: C.eco, role: 'Extraction',
   passive: 'This planet has +1 mine slot and +3 Ultanium/min capacity.', loc: { mineSlots: 1, cap: 3 },
   active: A('vein', 'Strike Vein', 240, 'self', 'planet', 'Gain 25 Ultanium.') });
+
+S({ id: 'architect', name: 'Architect', tag: 'Ar', color: C.eco, role: 'Corridors',
+  passive: 'Corridors started here build 40% faster.', loc: { corridor: 0.4 },
+  active: A('rapidlink', 'Rapid Link', 240, 'own', 'node', 'Open a temporary corridor from here to another of your nodes for 60 s.') });
 
 // --- Signature specialists: reward for capturing a faction's Warlord ---
 S({ id: 'ironmonger', name: 'Ironmonger', tag: 'Im', color: '#c98a3c', role: 'Ferrum signature', sig: 'ferrum',
