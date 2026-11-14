@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Game, GNode, Ship } from '../sim/types';
 import { PLAYER } from '../sim/types';
-import { radii, shipRadii, sideColor, shipSeen, canTarget, natMax, docks } from '../sim/core';
+import { radii, shipRadii, sideColor, shipSeen, canTarget, shieldMax, docks, aegis } from '../sim/core';
 import { SPECS, TECHS, TECH_TIME } from '../sim/content';
 
 // 3D diorama renderer. Low-poly, flat-shaded models stand above a misty plane and are lit by one
@@ -14,6 +14,7 @@ export interface RenderUi {
   cam: Cam; w: number; h: number;
   sel: { type: 'node' | 'ship'; id: number } | null;
   targeting: boolean; from: number; hover: number;
+  glow?: Set<number> | null; // nodes to highlight as valid picks
 }
 /** Screen positions of every visible specialist statue, refreshed each frame (for tooltips). */
 export const spots: { x: number; y: number; r: number; spec: number }[] = [];
@@ -32,8 +33,8 @@ const TERRAIN = [
   ['#cc9379', '#a56e58', '#e3b7a2'], ['#cfdcdf', '#a2b5ba', '#eef5f5'],
 ];
 const BCOL: Record<string, string> = {
-  gen: '#e3c565', mine: '#a8835a', lab: '#7fb2dc', slab: '#7fb2dc', shield: '#bfe3ff', relay: '#cbb2e6', bastion: '#8d93a6',
-  turret: '#6d7385', screen: '#bfe3ff', sensor: '#f1ead9', barracks: '#dd7a63', shipyard: '#e3c565', dock: '#b8ad96',
+  gen: '#e3c565', mine: '#a8835a', lab: '#7fb2dc', slab: '#7fb2dc', shield: '#bfe3ff', sshield: '#bfe3ff', relay: '#cbb2e6', habitat: '#9fd0a8',
+  turret: '#6d7385', sensor: '#f1ead9', barracks: '#dd7a63', shipyard: '#e3c565', dock: '#b8ad96',
 };
 
 export function known(g: Game, n: GNode): { tier: 'live' | 'stale' | 'detected' | 'hidden'; owner: number; drones: number } {
@@ -206,13 +207,13 @@ function building(id: string, fade: number, researching: boolean): THREE.Group {
   }
   else if (id === 'shield') { b.add(mesh(new THREE.SphereGeometry(1.0, 10, 5, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshLambertMaterial({ color: col, transparent: true, opacity: 0.75, flatShading: true }))); }
   else if (id === 'relay') { b.add(mesh(new THREE.CylinderGeometry(0.1, 0.16, 2.8, 4), lam(PAPER, fade), 0, 1.4), mesh(new THREE.TorusGeometry(0.5, 0.08, 4, 12), lam(col, fade), 0, 2.4), mesh(new THREE.TorusGeometry(0.32, 0.08, 4, 12), lam(col, fade), 0, 1.8)); }
-  else if (id === 'bastion') { b.add(mesh(new THREE.BoxGeometry(1.8, 1.2, 0.9), lam(col, fade), 0, 0.6)); for (let i = -1; i <= 1; i++) b.add(mesh(new THREE.BoxGeometry(0.4, 0.4, 0.9), lam(col, fade), i * 0.7, 1.4)); }
+  else if (id === 'habitat') { b.add(mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.7, 8), lam(col, fade), 0, 0.35), mesh(new THREE.SphereGeometry(0.75, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), lam(PAPER, fade), 0, 0.7)); }
   else if (id === 'barracks') { b.add(mesh(new THREE.BoxGeometry(1.6, 0.9, 1.0), lam(col, fade), 0, 0.45), mesh(new THREE.ConeGeometry(0.75, 0.6, 4), lam(shadeCss(col, 0.75), fade), 0, 1.2)); (b.children[1] as THREE.Mesh).rotation.y = Math.PI / 4; }
   else if (id === 'shipyard') { for (const x of [-0.8, 0.8]) b.add(mesh(new THREE.BoxGeometry(0.2, 2.0, 0.2), lam(col, fade), x, 1.0)); b.add(mesh(new THREE.BoxGeometry(1.9, 0.22, 0.3), lam(col, fade), 0, 2.0)); }
   else if (id === 'sensor') { const d = mesh(new THREE.ConeGeometry(0.7, 0.45, 10, 1, true), lam(col, fade), 0, 1.4); d.rotation.x = Math.PI * 0.8; b.add(mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.2, 4), lam('#4b5063', fade), 0, 0.6), d); }
   return b;
 }
-const PLANET_ORDER = ['lab', 'gen', 'mine', 'shield', 'relay', 'bastion'];
+const PLANET_ORDER = ['lab', 'gen', 'mine', 'shield', 'habitat', 'relay'];
 
 const DOCK_ANGLES = [150, 30, 210, -30].map(d => (d * Math.PI) / 180);
 function dockPos(n: GNode, i: number): { x: number; y: number; z: number; a: number } {
@@ -286,8 +287,11 @@ function buildNode(g: Game, n: GNode, tier: string, owner: number, researching: 
     if (n.b.sensor) { const s = building('sensor', fade, false); s.position.set(r * 0.4, roofY, -r * 0.4); grp.add(s); }
     if (n.b.barracks) { const b = building('barracks', fade, false); b.position.set(-r * 0.75, base + hh * 0.35, -r * 1.25); grp.add(b); }
     if (n.b.shipyard) { const y = building('shipyard', fade, false); y.position.set(r * 0.8, base + hh * 0.2, -r * 1.3); grp.add(y); }
-    if (n.b.screen) { const s = mesh(new THREE.TorusGeometry(r * 1.2, r * 0.07, 4, 24), lam(BCOL.screen, fade), 0, base + hh * 0.2); s.rotation.x = Math.PI / 2; grp.add(s); }
+    for (let i = 0; i < Math.min(4, n.b.sshield || 0); i++) { const a = -Math.PI / 2 + (i - 1.5) * 0.55; grp.add(mesh(new THREE.SphereGeometry(0.55, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), lam(BCOL.sshield, fade), Math.cos(a) * r * 0.6, roofY, Math.sin(a) * r * 0.6)); }
   }
+  // shield bubble: its strength is shown by how solid it looks (updated each frame)
+  const bub = mesh(new THREE.SphereGeometry(r * (n.kind === 'planet' ? 1.75 : 1.7), 16, 10), new THREE.MeshLambertMaterial({ color: '#bfe3ff', transparent: true, opacity: 0, depthWrite: false, flatShading: true }), 0, n.kind === 'planet' ? r * 1.5 : r * 1.05);
+  bub.name = 'bubble'; bub.renderOrder = 2; grp.add(bub);
   const orb = grp.getObjectByName('orb') || null;
   return { grp, spin, orb };
 }
@@ -339,9 +343,10 @@ function icon(c: CanvasRenderingContext2D, id: string, x: number, y: number) {
     case 'mine': c.moveTo(-6, 5); c.lineTo(-1, -5); c.lineTo(2, 0); c.lineTo(4, -2); c.lineTo(7, 5); c.closePath(); c.fill(); break;
     case 'gen': c.moveTo(1, -6); c.lineTo(-4, 1); c.lineTo(0, 1); c.lineTo(-1, 6); c.lineTo(4, -1); c.lineTo(0, -1); c.closePath(); c.fill(); break;
     case 'lab': case 'slab': c.moveTo(-2, -6); c.lineTo(2, -6); c.moveTo(-1.5, -6); c.lineTo(-1.5, -1); c.lineTo(-5, 5); c.lineTo(5, 5); c.lineTo(1.5, -1); c.lineTo(1.5, -6); c.stroke(); c.beginPath(); c.moveTo(-3.5, 2.5); c.lineTo(3.5, 2.5); c.lineTo(5, 5); c.lineTo(-5, 5); c.fill(); break;
-    case 'shield': case 'screen': c.moveTo(0, -6); c.lineTo(5, -4); c.lineTo(4, 2); c.lineTo(0, 6); c.lineTo(-4, 2); c.lineTo(-5, -4); c.closePath(); id === 'shield' ? c.fill() : c.stroke(); break;
+    case 'shield': case 'sshield': c.moveTo(0, -6); c.lineTo(5, -4); c.lineTo(4, 2); c.lineTo(0, 6); c.lineTo(-4, 2); c.lineTo(-5, -4); c.closePath(); id === 'shield' ? c.fill() : c.stroke(); break;
     case 'turret': c.arc(-1, 1, 3.5, 0, 7); c.fill(); c.beginPath(); c.moveTo(1, -1); c.lineTo(6, -5); c.stroke(); break;
-    case 'bastion': c.moveTo(-6, 5); c.lineTo(-6, -4); c.lineTo(-3, -4); c.lineTo(-3, -1); c.lineTo(-1, -1); c.lineTo(-1, -4); c.lineTo(1, -4); c.lineTo(1, -1); c.lineTo(3, -1); c.lineTo(3, -4); c.lineTo(6, -4); c.lineTo(6, 5); c.closePath(); c.fill(); break;
+    case 'habitat': c.arc(0, 2, 5, Math.PI, 0); c.lineTo(5, 4); c.lineTo(-5, 4); c.closePath(); c.fill(); break;
+    case 'unused': c.moveTo(-6, 5); c.lineTo(-6, -4); c.lineTo(-3, -4); c.lineTo(-3, -1); c.lineTo(-1, -1); c.lineTo(-1, -4); c.lineTo(1, -4); c.lineTo(1, -1); c.lineTo(3, -1); c.lineTo(3, -4); c.lineTo(6, -4); c.lineTo(6, 5); c.closePath(); c.fill(); break;
     case 'sensor': c.arc(0, -1, 5, Math.PI * 0.15, Math.PI * 0.85); c.stroke(); c.beginPath(); c.moveTo(0, -1); c.lineTo(0, 6); c.stroke(); break;
     case 'relay': c.moveTo(0, 6); c.lineTo(0, -3); c.stroke(); c.beginPath(); c.arc(0, -3, 3, Math.PI * 1.15, Math.PI * 1.85); c.stroke(); c.beginPath(); c.arc(0, -3, 6, Math.PI * 1.2, Math.PI * 1.8); c.stroke(); break;
     case 'barracks': c.moveTo(-5, 0); c.lineTo(0, -4); c.lineTo(5, 0); c.moveTo(-5, 5); c.lineTo(0, 1); c.lineTo(5, 5); c.stroke(); break;
@@ -350,7 +355,7 @@ function icon(c: CanvasRenderingContext2D, id: string, x: number, y: number) {
   }
   c.restore();
 }
-const ICON_ORDER = ['lab', 'slab', 'gen', 'mine', 'shield', 'relay', 'bastion', 'turret', 'screen', 'sensor', 'barracks', 'shipyard', 'dock'];
+const ICON_ORDER = ['lab', 'slab', 'gen', 'mine', 'shield', 'sshield', 'habitat', 'relay', 'turret', 'sensor', 'barracks', 'shipyard', 'dock'];
 
 // ------------------------------------------------------------------ frame
 export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: number) {
@@ -370,7 +375,7 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
     const k = known(g, n), v = nodeViews.get(n.id);
     if (k.tier === 'hidden') { if (v) { dispose(v.grp); nodeViews.delete(n.id); } continue; }
     const live = k.tier === 'live', b = live ? n.b : g.intel[n.id].snap?.b || {};
-    const natQ = live && n.kind === 'planet' ? Math.round(Math.min(1, n.nat / Math.max(1, n.owner === 0 ? [4, 7, 11][n.size] : natMax(g, n))) * 16) : 0;
+    const natQ = 0; // shields are drawn as a bubble instead
     const laneQ = n.owner === PLAYER && n.lane ? Math.round((1 - n.lane.left / n.lane.total) * 24) : -1;
     const specs = k.tier === 'detected' ? [] : live ? n.specs : g.intel[n.id].snap?.specs || [];
     const researching = n.owner === PLAYER && !!n.research;
@@ -395,6 +400,8 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
     if (v.spin) v.spin.rotation.y = now / 6000;
     if (v.orb) { v.orb.rotation.y = now / 400; v.orb.position.y = 3.0 + 0.2 * Math.sin(now / 300); }
     const n = g.nodes[id];
+    const bub = v.grp.getObjectByName('bubble') as THREE.Mesh | undefined;
+    if (bub) { const k = known(g, n), sh = k.tier === 'live' ? n.shields + aegis(g, n) : 0, mx = Math.max(1, shieldMax(g, n) + aegis(g, n)); (bub.material as THREE.MeshLambertMaterial).opacity = sh > 0.5 ? 0.06 + 0.2 * Math.min(1, sh / mx) : 0; bub.visible = sh > 0.5; }
     for (const st of v.statues) { const p = toScreen(n.x + st.x, n.y + st.z, STATUE_H * 0.65); spots.push({ x: p.x, y: p.y, r: Math.max(12, z * 1.6), spec: st.spec }); }
   }
 
@@ -499,9 +506,10 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
     const gp = toScreen(n.x, n.y), sil = k.tier === 'detected', stale = k.tier === 'stale';
     const col = sil ? UNKNOWN : k.owner === 0 ? NEUTRAL : sideColor(g, k.owner);
     const pr = nodeR(n) * z;
-    if (ui.targeting && n.id !== ui.from && (canTarget(g, n) || n.owner === PLAYER)) {
-      ctx.strokeStyle = hexA(PAPER, 0.35 + 0.3 * Math.sin(now / 250)); ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.ellipse(gp.x, gp.y, pr * 2.3, pr * 2.3 * TILT, 0, 0, 7); ctx.stroke();
+    if (ui.targeting && n.id !== ui.from && (ui.glow ? ui.glow.has(n.id) : canTarget(g, n) || n.owner === PLAYER)) {
+      const gl = ui.glow ? GOLD : PAPER; ctx.strokeStyle = hexA(gl, 0.45 + 0.35 * Math.sin(now / 250)); ctx.lineWidth = ui.glow ? 4 : 2.5;
+      if (ui.glow) { ctx.shadowColor = GOLD; ctx.shadowBlur = 14; }
+      ctx.beginPath(); ctx.ellipse(gp.x, gp.y, pr * 2.3, pr * 2.3 * TILT, 0, 0, 7); ctx.stroke(); ctx.shadowBlur = 0;
     }
     let ny = toScreen(n.x, n.y + nodeR(n) * 1.55 + 3.4).y + 8;
     if (sil) {

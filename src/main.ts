@@ -1,15 +1,17 @@
 import './ui/style.css';
+import { applyTuning, initConsole } from './ui/console';
+applyTuning(); // saved console edits apply before anything reads the balance tables
 import type { Game } from './sim/types';
 import { PLAYER } from './sim/types';
 import { CFG } from './sim/config';
 import { newGame } from './sim/mapgen';
 import { step, exec, type Cmd } from './sim/sim';
-import { canTarget, shipById, shipSeen, isDocked, updateVision } from './sim/core';
+import { canTarget, shipById, shipSeen, isDocked, updateVision, corridorReach, canCorridor } from './sim/core';
 import { abilitiesOf, abilityCheck } from './sim/abilities';
 import { draw, nodeR, known, toScreen, nodeScreen, spots, TILT, type Cam } from './ui/render';
 import { hud, panel, menu, modal, title, help, launchPreview, launchPool, minToWin, specTip, type App } from './ui/ui';
 
-const SAVE = 'spacenodes.save.v1', META = 'spacenodes.meta.v1';
+const SAVE = 'spacenodes.save.v2', META = 'spacenodes.meta.v1';
 const $ = (id: string) => document.getElementById(id)!;
 const canvas = $('map') as HTMLCanvasElement, ctx = canvas.getContext('2d')!;
 const elHud = $('hud'), elPanel = $('panel'), elOverlay = $('overlay'), elToasts = $('toasts'), elTip = $('tip');
@@ -26,6 +28,7 @@ let camTo: { x: number; y: number } | null = null;
 let W = 0, H = 0, hover = -1, dirty = true, lastLog = 0, sliding = false, helpFrom: App['screen'] = 'title';
 const toasts: { msg: string; kind: string; node: number; until: number }[] = [];
 (window as any).__app = app; // handy for debugging and automated checks
+const tuning = initConsole({ game: () => app.g, selected: () => (app.sel?.type === 'node' ? app.sel.id : -1), setSpeed: n => { app.speed = n; dirty = true; }, refresh: () => { dirty = true; } });
 
 // ------------------------------------------------------------------ run lifecycle
 function startRun(g: Game) {
@@ -52,6 +55,8 @@ function focus(id: number) {
   const mobile = W < 820, open = !!app.sel || !!app.launch;
   camTo = { x: n.x + (!mobile && open ? 190 / cam.z : 0), y: n.y + (mobile && open ? (H * 0.22) / (cam.z * TILT) : 0) };
 }
+/** Hide the panel while the player picks a target on the map. */
+function minimize() { app.sel = null; app.launch = null; }
 function select(type: 'node' | 'ship', id: number) { app.sel = { type, id }; app.tab = 'info'; app.launch = null; dirty = true; if (type === 'node') focus(id); }
 
 function openLaunch(shipId: number, to: number) {
@@ -83,6 +88,7 @@ function act(a: string, el: HTMLElement) {
     case 'abandon': if (confirm('Abandon this run?')) { store.del(SAVE); app.hasSave = false; app.meta.runs++; store.set(META, JSON.stringify(app.meta)); app.screen = 'title'; app.g = null; } break;
     case 'pause': app.paused = !app.paused; if (app.paused) save(); break;
     case 'speed': app.speed = app.speed === 1 ? 2 : app.speed === 2 ? 4 : 1; break;
+    case 'console': tuning.toggle(); break;
     case 'menu': app.menu = args[0] || null; break;
     case 'close': app.sel = null; app.launch = null; break;
     case 'tab': app.tab = args[0]; break;
@@ -100,7 +106,10 @@ function act(a: string, el: HTMLElement) {
     case 'send': app.mode = { k: 'launch', ship: +args[0] }; app.launch = null; break;
     case 'from': openLaunch(+args[0], selNode); break;
     case 'redirect': app.mode = { k: 'redirect', ship: +args[0] }; break;
-    case 'corridorpick': app.mode = { k: 'corridor', from: selNode }; break;
+    case 'corridorpick': app.mode = { k: 'corridor', from: selNode }; minimize(); break;
+    case 'route': app.mode = { k: 'route', from: selNode }; minimize(); break;
+    case 'muster': run({ c: 'muster', node: selNode }); break;
+    case 'noop': break;
     case 'swap': run({ c: 'swap', spec: +args[0], ship: +args[1] }); break;
     case 'lane': { const from = g!.nodes[selNode]; app.launch = { ship: -1, from: selNode, to: +args[0], drones: Math.floor(from.drones / 2), specs: [], lane: true }; break; }
     case 'ability': {
@@ -129,7 +138,7 @@ function act(a: string, el: HTMLElement) {
 document.addEventListener('click', e => {
   const tipEl = (e.target as HTMLElement).closest('[data-tip]') as HTMLElement | null;
   if (tipEl && !(e.target as HTMLElement).closest('button')) { const r = tipEl.getBoundingClientRect(); showTip(+tipEl.dataset.tip!, r.left + r.width / 2, r.top); return; }
-  if (!(e.target as HTMLElement).closest('#tip')) hideTip();
+  if (!(e.target as HTMLElement).closest('#tip') && !(longPressed && e.target === canvas)) hideTip();
   const el = (e.target as HTMLElement).closest('[data-a]') as HTMLElement | null;
   if (!el || (el as HTMLButtonElement).disabled) return;
   if (el instanceof HTMLInputElement && el.type !== 'checkbox') return;
@@ -185,7 +194,8 @@ function tap(px: number, py: number) {
     const m = app.mode;
     if (m.k === 'launch') openLaunch(m.ship, hit.id);
     else if (m.k === 'redirect') { if (run({ c: 'redirect', ship: m.ship, to: hit.id })) app.mode = null; }
-    else if (m.k === 'corridor') { if (run({ c: 'corridor', from: m.from, to: hit.id })) { app.mode = null; app.tab = 'info'; } }
+    else if (m.k === 'corridor') { if (run({ c: 'corridor', from: m.from, to: hit.id })) { app.mode = null; app.tab = 'info'; app.sel = { type: 'node', id: m.from }; } }
+    else if (m.k === 'route') { const from = g.nodes[m.from]; if (!corridorReach(g, m.from).includes(hit.id)) { note('No corridor route to that node'); return; } app.mode = null; app.sel = { type: 'node', id: hit.id }; app.launch = { ship: -1, from: m.from, to: hit.id, drones: Math.floor(from.drones / 2), specs: [], lane: true }; focus(hit.id); }
     else if (run({ c: 'ability', spec: m.spec, id: m.id, target: hit.id })) app.mode = null;
     dirty = true;
     return;
@@ -317,7 +327,8 @@ function frame(now: number) {
     if (camTo) { cam.x += (camTo.x - cam.x) * 0.16; cam.y += (camTo.y - cam.y) * 0.16; if (Math.hypot(camTo.x - cam.x, camTo.y - cam.y) < 0.4) camTo = null; }
     cam.x = Math.max(-40, Math.min(g.w + 40, cam.x)); cam.y = Math.max(-40, Math.min(g.h + 40, cam.y));
     const from = app.mode?.k === 'launch' ? shipById(g, app.mode.ship)?.at ?? -1 : -1;
-    draw(ctx, g, { cam, w: W, h: H, sel: app.launch ? { type: 'node', id: app.launch.to } : app.sel, targeting: !!app.mode, from, hover }, now);
+    const glow = app.mode?.k === 'route' ? new Set(corridorReach(g, app.mode.from)) : app.mode?.k === 'corridor' ? new Set(g.nodes.filter(n => { const e = canCorridor(g, g.nodes[(app.mode as { from: number }).from], n); return !e || e === 'Not enough Ultanium'; }).map(n => n.id)) : null;
+    draw(ctx, g, { cam, w: W, h: H, sel: app.launch ? { type: 'node', id: app.launch.to } : app.sel, targeting: !!app.mode, from, hover, glow }, now);
     if (now - lastSave > 15000) { lastSave = now; save(); }
   } else { ctx.fillStyle = '#262e49'; ctx.fillRect(0, 0, W, H); }
   if (dirty || now - lastUi > 250) { dirty = false; lastUi = now; refresh(); }

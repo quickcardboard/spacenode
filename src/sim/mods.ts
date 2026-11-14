@@ -23,6 +23,7 @@ export function sideMods(g: Game, owner: number): Mods {
   if (side) {
     for (const r of side.relics) addMods(out, RELICS[r]?.mods);
     for (const t of side.techs) addMods(out, TECHS[t]?.mods);
+    for (const t in side.techLv || {}) addMods(out, TECHS[t]?.mods, side.techLv[t]);
     if (side.kind === 'faction') { addMods(out, FACTIONS[side.fac].mods); if (side.broken) out.prod = (out.prod || 0) - 0.6; }
     if (side.kind === 'archon') addMods(out, ARCHONS[side.fac].mods);
     if (side.kind === 'player') addMods(out, ARCHONS[g.sides[g.archon].fac].pmods);

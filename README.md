@@ -21,8 +21,16 @@ Play in a browser: https://quickcardboard.github.io/spacenode/ (once GitHub Page
 - `src/ui/render.ts` draws the map in 3D with Three.js (low-poly lit models, dock arms, docked and orbiting ships) under a 2D overlay for flags and labels; `src/ui/ui.ts` builds the panels; `src/main.ts` is input, the loop and autosave.
 - `scripts/bot.ts` plays full runs without a browser.
 
+## Tuning console
+
+On desktop, press ` (backtick) or F2, or click ⚙. Every value in `src/sim/config.ts`, every building's cost, time and limit, and the research cost tables can be edited while playing. Edits are saved in the browser and re-applied on load. **Copy changes** puts them on the clipboard as JSON. The Commands tab has cheats for testing (`ult 500`, `reveal`, `stage 4`, `tech all`, `speed 16`, `help`).
+
 ## Rules as built
 
+- Defence is Drones plus shields. Shield generators give 5 each, at most 20 per node; shields absorb attacks first and recharge over time. Neutral planets carry 5, 10 or 20 by size.
+- Turrets do not add defence: each shoots down 3 Drones of every arriving enemy fleet. Unseen fleets and Siegebreakers slip past.
+- Late-game sinks: Muster (buy Drones at a station), Habitats (+15 cap), repeatable research.
+- Research: five branches; tier 3 in each is a doctrine pair (choosing one locks the other); each branch ends in a repeatable technology.
 - Mines produce Ultanium; each generator powers two mines; mines need one Drone each to run.
 - Building and production share one lane per node (a station that is building makes no Drones). Research has its own lane.
 - One global Drone cap. Ships carry any number of Drones and up to three specialists.
@@ -34,4 +42,4 @@ Play in a browser: https://quickcardboard.github.io/spacenode/ (once GitHub Page
 
 ## Not built yet
 
-Corridors, new-station construction, sound, a tutorial, offline install (service worker), skirmish and multiplayer.
+New-station construction, sound, a tutorial, offline install (service worker), skirmish and multiplayer.

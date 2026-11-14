@@ -1,7 +1,7 @@
 import type { Game, GNode, Ship, Spec, Mods, Fx, Task, Side } from './types';
 import { PLAYER } from './types';
-import { CFG, BUILD, STRUCT_DEF } from './config';
-import { SPECS, PLANET_POOL, RELICS, TECHS, TECH_COST, TECH_TIME, TECH_OPS, PERKS, EVENTS, FACTIONS, ARCHONS } from './content';
+import { CFG, BUILD } from './config';
+import { SPECS, PLANET_POOL, RELICS, TECHS, TECH_COST, TECH_TIME, TECH_OPS, REP, PERKS, EVENTS, FACTIONS, ARCHONS } from './content';
 import { sideMods, nodeMods, shipMods } from './mods';
 import { rnd, ri, pick, sample } from './rng';
 
@@ -73,10 +73,10 @@ export function totalDrones(g: Game, owner: number): number {
 export function droneCap(g: Game, owner: number): number {
   const side = g.sides[owner];
   if (!side) return BIG;
-  const m = sideMods(g, owner).droneCap || 0;
+  const sm = sideMods(g, owner), m = sm.droneCap || 0;
   if (side.kind !== 'player') return side.capBase + 22 * (g.mob.stage + g.mob.surge) + m;
   let cap = CFG.capBase + m;
-  for (const n of g.nodes) if (n.owner === owner) cap += n.kind === 'planet' ? CFG.capPlanet : CFG.capStation;
+  for (const n of g.nodes) if (n.owner === owner) cap += (n.kind === 'planet' ? CFG.capPlanet : CFG.capStation) + (CFG.habitatCap + (sm.habitat || 0)) * (n.b.habitat || 0);
   return cap;
 }
 
@@ -107,12 +107,12 @@ export function updateVision(g: Game) {
     if (v > it.seen) it.seen = v;
     if (v === 2) {
       it.t = g.t;
-      it.snap = { owner: n.owner, drones: n.drones, nat: n.nat, b: { ...n.b }, specs: n.specs.slice(), prisoners: n.prisoners.slice(), buffs: n.buffs.slice() };
+      it.snap = { owner: n.owner, drones: n.drones, shields: n.shields, b: { ...n.b }, specs: n.specs.slice(), prisoners: n.prisoners.slice(), buffs: n.buffs.slice() };
     }
   }
 }
 export function shipRadii(g: Game, s: Ship): [number, number] {
-  const f = 1 + (shipMods(g, s).fov || 0);
+  const m = shipMods(g, s), f = 1 + (m.fov || 0) + (m.shipFov || 0);
   return [CFG.shipFov[0] * f, CFG.shipFov[1] * f];
 }
 /** 0 = unseen, 1 = seen, 2 = strength known. */
@@ -147,9 +147,16 @@ export function viewOf(g: Game, n: GNode): { live: boolean; age: number; v: null
 export function mineSlots(g: Game, n: GNode, tm?: Mods) {
   return CFG.mineSlots[n.size] + ((tm || nodeMods(g, n)).mineSlots || 0);
 }
-export function natMax(g: Game, n: GNode, tm?: Mods) {
-  const m = tm || nodeMods(g, n);
-  return (n.kind === 'planet' ? CFG.natBySize[n.size] + 4 * (n.b.shield || 0) : 0) + (n.kind === 'planet' ? m.natMax || 0 : 0);
+/** Shield capacity: generators plus specialist, relic and faction bonuses, capped (the Citadel's Aegis is separate). */
+export function shieldMax(g: Game, n: GNode, tm?: Mods) {
+  const m = tm || (g.sides[n.owner] ? nodeMods(g, n) : {});
+  const gens = (n.b.shield || 0) + (n.b.sshield || 0);
+  return Math.max(0, Math.min(CFG.shieldCap, gens * CFG.shieldPerGen + (m.shieldMax || 0) + (m.def || 0)));
+}
+/** Incoming Drones a node's turrets destroy before the given fleet lands. */
+export function turretKills(n: GNode, sm: Mods, tm: Mods): number {
+  if (!n.b.turret || sm.ignStruct || (sm.stealth && !tm.seeStealth)) return 0;
+  return Math.round(CFG.turretKill * n.b.turret * (1 + (tm.structDef || 0)) * (1 - Math.min(0.75, sm.structHalf || 0)));
 }
 export interface Ops { mines: number; powered: number; on: number; out: number; cap: number; resNeed: number; resOn: boolean; short: number }
 export function nodeOps(g: Game, n: GNode, tm?: Mods): Ops {
@@ -158,7 +165,7 @@ export function nodeOps(g: Game, n: GNode, tm?: Mods): Ops {
   const r: Ops = { mines: 0, powered: 0, on: 0, out: 0, cap: 0, resNeed: 0, resOn: false, short: 0 };
   let avail = n.drones;
   const lab = (n.b.lab || 0) + (n.b.slab || 0) > 0;
-  if (n.research && lab && side) r.resNeed = TECH_OPS[TECHS[n.research].tier];
+  if (n.research && lab && side) r.resNeed = techOps(n.research);
   if (r.resNeed && n.resFirst) { r.resOn = avail >= r.resNeed; if (r.resOn) avail -= r.resNeed; }
   if (n.kind === 'planet') {
     r.mines = Math.min(n.b.mine || 0, mineSlots(g, n, m));
@@ -246,19 +253,47 @@ export function isDocked(g: Game, s: Ship): boolean {
   return here.indexOf(s) < docks(n);
 }
 
+/** Buy Drones on the spot at a station, limited by the Drone cap. */
+export function muster(g: Game, n: GNode): string | null {
+  if (n.kind !== 'station') return 'Muster at a station';
+  const side = g.sides[n.owner], room = droneCap(g, n.owner) - totalDrones(g, n.owner);
+  const k = Math.min(CFG.musterSize, room);
+  if (k <= 0) return 'Drone cap reached';
+  const cost = k * Math.max(1, CFG.musterCost - (sideMods(g, n.owner).musterCost || 0));
+  if (side.ult < cost) return `Needs ${cost} Ultanium`;
+  side.ult -= cost; n.drones += k;
+  return null;
+}
+export const musterPrice = (g: Game) => Math.max(1, CFG.musterCost - (sideMods(g, PLAYER).musterCost || 0));
+
 // ---------------------------------------------------------------- research
+export const techLevel = (g: Game, owner: number, id: string) => (g.sides[owner].techLv || {})[id] || 0;
 export function techCost(g: Game, owner: number, id: string) {
-  return Math.round(TECH_COST[TECHS[id].tier] * (1 - (sideMods(g, owner).techCost || 0)));
+  const t = TECHS[id], base = t.rep ? REP.cost * Math.pow(REP.growth, techLevel(g, owner, id)) : TECH_COST[t.tier];
+  return Math.round(base * (1 - (sideMods(g, owner).techCost || 0)));
+}
+export const techTime = (id: string) => (TECHS[id].rep ? REP.time : TECH_TIME[TECHS[id].tier]);
+export const techOps = (id: string) => (TECHS[id].rep ? REP.ops : TECH_OPS[TECHS[id].tier]);
+/** Why a technology cannot be started, or null. Doctrines lock their partner; repeatables stop at their limit. */
+export function techBlock(g: Game, owner: number, id: string): string | null {
+  const side = g.sides[owner], t = TECHS[id];
+  if (t.rep) { if (techLevel(g, owner, id) >= t.rep) return 'Maximum level'; }
+  else if (side.techs.includes(id)) return 'Researched';
+  if (t.pre && !side.techs.includes(t.pre)) return `Needs ${TECHS[t.pre].name}`;
+  if (t.excl && side.techs.includes(t.excl)) return `Locked: you chose ${TECHS[t.excl].name}`;
+  return null;
 }
 export function techAvailable(g: Game, owner: number): string[] {
-  const side = g.sides[owner];
-  return Object.keys(TECHS).filter(id => !side.techs.includes(id) && (!TECHS[id].pre || side.techs.includes(TECHS[id].pre!)));
+  return Object.keys(TECHS).filter(id => !techBlock(g, owner, id));
 }
 export function startResearch(g: Game, n: GNode, id: string): string | null {
   const side = g.sides[n.owner];
   if (!((n.b.lab || 0) + (n.b.slab || 0))) return 'Needs a Research Lab';
-  if (!techAvailable(g, n.owner).includes(id)) return 'Not available';
+  const block = techBlock(g, n.owner, id);
+  if (block) return block;
   if (g.nodes.some(o => o.owner === n.owner && o.id !== n.id && o.research === id)) return 'Already being researched elsewhere';
+  const ex = TECHS[id].excl;
+  if (ex && g.nodes.some(o => o.owner === n.owner && o.research === ex)) return `${TECHS[ex].name} is being researched; the two exclude each other`;
   if (side.techProg[id] === undefined) {
     const c = techCost(g, n.owner, id);
     if (side.ult < c) return 'Not enough Ultanium';
@@ -268,18 +303,20 @@ export function startResearch(g: Game, n: GNode, id: string): string | null {
   return null;
 }
 export function grantTech(g: Game, owner: number, id: string) {
-  const side = g.sides[owner];
-  if (side.techs.includes(id)) return;
-  side.techs.push(id); delete side.techProg[id]; g.modV++;
+  const side = g.sides[owner], t = TECHS[id];
+  if (t.rep) { side.techLv = side.techLv || {}; side.techLv[id] = (side.techLv[id] || 0) + 1; }
+  else { if (side.techs.includes(id)) return; side.techs.push(id); }
+  delete side.techProg[id]; g.modV++;
   for (const n of g.nodes) if (n.owner === owner && n.research === id) n.research = null;
-  if (owner === PLAYER) { g.stats.techs++; log(g, `Research complete: ${TECHS[id].name}`, 'good'); }
-  else log(g, `${sideName(g, owner)} fielded ${TECHS[id].name}`, 'warn');
+  const nm = t.rep ? `${t.name} ${side.techLv[id]}` : t.name;
+  if (owner === PLAYER) { g.stats.techs++; log(g, `Research complete: ${nm}`, 'good'); }
+  else log(g, `${sideName(g, owner)} fielded ${nm}`, 'warn');
 }
 
 // ---------------------------------------------------------------- combat
 export interface Battle {
   sent: number; preKilled: number; atk: number; def: number; win: boolean; surv: number;
-  parts: { drones: number; pct: number; flat: number; garr: number; nat: number; struct: number; bonus: number; aegis: number };
+  parts: { drones: number; pct: number; flat: number; garr: number; shield: number; turret: number; lance: number; bonus: number; aegis: number };
 }
 export function aegis(g: Game, n: GNode): number {
   if (!n.citadel) return 0;
@@ -287,20 +324,18 @@ export function aegis(g: Game, n: GNode): number {
   return Math.round(layers * CFG.aegisPerLayer * (1 + (sideMods(g, g.archon).aegisPct || 0)));
 }
 export function calcBattle(g: Game, drones: number, sm: Mods, n: GNode, tm: Mods): Battle {
-  const pk = Math.min(0.6, (tm.preKill || 0) + (tm.ambush || 0));
-  const preKilled = Math.floor(drones * pk);
+  const turret = Math.min(drones, turretKills(n, sm, tm));
+  const lance = Math.floor((drones - turret) * Math.min(0.6, (tm.preKill || 0) + (tm.ambush || 0)));
+  const preKilled = turret + lance;
   const d = drones - preKilled;
   const pct = Math.floor(d * (sm.atkPct || 0));
   const flat = (sm.atk || 0) + Math.min(sm.atkPer8 || 0, Math.floor(d / 8));
   const atk = d + pct + flat;
   const garr = n.drones * (tm.dbl ? 2 : 1);
-  const nat = sm.ignNat ? 0 : Math.floor(n.nat);
-  let raw = 0;
-  for (const k in STRUCT_DEF) raw += STRUCT_DEF[k] * (n.b[k] || 0);
-  const struct = sm.ignStruct ? 0 : Math.round(raw * (1 + (tm.structDef || 0)) * (1 - Math.min(0.75, sm.structHalf || 0)));
-  const bonus = Math.round((tm.def || 0) - (n.owner === 0 ? sm.vsNeutral || 0 : 0));
+  const shield = sm.ignNat ? 0 : Math.max(0, Math.floor(n.shields) - (sm.shieldPierce || 0));
+  const bonus = -Math.round(n.owner === 0 ? sm.vsNeutral || 0 : 0);
   const ae = aegis(g, n);
-  const def = Math.max(0, garr + nat + struct + bonus + ae);
+  const def = Math.max(0, garr + shield + bonus + ae);
   const win = atk > def || (atk === def && (sm.ties || 0) > 0 && d > 0);
   let surv = 0;
   if (win) {
@@ -308,7 +343,7 @@ export function calcBattle(g: Game, drones: number, sm: Mods, n: GNode, tm: Mods
     surv = Math.max(1, Math.min(d, Math.round(surv * (1 + (sm.surv || 0)))));
     if (tm.martyr) surv = Math.ceil(surv / 2);
   }
-  return { sent: drones, preKilled, atk, def, win, surv, parts: { drones: d, pct, flat, garr, nat, struct, bonus, aegis: ae } };
+  return { sent: drones, preKilled, atk, def, win, surv, parts: { drones: d, pct, flat, garr, shield, turret, lance, bonus, aegis: ae } };
 }
 
 function captureSpecs(g: Game, ids: number[], at: GNode, captor: number) {
@@ -363,13 +398,13 @@ export function capture(g: Game, n: GNode, s: Ship, r: Battle, sm: Mods) {
     if (old === PLAYER) log(g, `Corridors to ${n.name} collapsed`, 'bad', n.id);
   }
   for (const o of g.nodes) if (o.owner === old) { o.queue = o.queue.filter(t => !(t.kind === 'corridor' && +t.id === n.id)); if (o.lane && o.lane.kind === 'corridor' && +o.lane.id === n.id) { g.sides[old] && (g.sides[old].ult += o.lane.cost); o.lane = o.queue.shift() || null; } }
-  n.owner = now; n.drones = r.surv; n.nat = 0; n.lane = null; n.queue = []; n.research = null; n.prod = 0; n.hold = null; n.conv = null; n.buffs = [];
+  n.owner = now; n.drones = r.surv; n.shields = 0; n.lane = null; n.queue = []; n.research = null; n.prod = 0; n.hold = null; n.conv = null; n.buffs = [];
   s.at = n.id; s.to = -1; s.drones = 0; s.x = n.x; s.y = n.y; s.buffs = []; s.seq = g.nextId++; s.off = false;
   const side = g.sides[now];
   if (side) {
     const m = sideMods(g, now);
     if (m.refund && g.t >= side.refundT) { n.drones += r.sent - r.surv; side.refundT = g.t + m.refund; if (now === PLAYER) log(g, 'Phoenix Clause refunds your losses', 'good', n.id); }
-    if (m.capShield) n.buffs.push({ k: 'def', v: m.capShield, until: g.t + 60 });
+    if (m.capShield) { n.buffs.push({ k: 'def', v: m.capShield, until: g.t + 60 }); n.shields += m.capShield; }
     if (m.capUlt) side.ult += m.capUlt;
   }
   g.modV++;
@@ -391,8 +426,8 @@ export function capture(g: Game, n: GNode, s: Ship, r: Battle, sm: Mods) {
 
 function repel(g: Game, n: GNode, s: Ship, r: Battle, sm: Mods) {
   let dmg = r.atk;
-  if (!sm.ignNat) { const nl = Math.min(n.nat, dmg); n.nat -= nl; dmg -= nl; }
-  dmg -= r.parts.struct + Math.max(0, r.parts.bonus + r.parts.aegis);
+  if (!sm.ignNat) { const nl = Math.min(n.shields, dmg); n.shields -= nl; dmg -= nl; }
+  dmg -= Math.max(0, r.parts.bonus + r.parts.aegis);
   const loss = Math.max(0, Math.min(n.drones, Math.ceil(dmg / (r.parts.garr > n.drones ? 2 : 1))));
   n.drones -= loss;
   if (s.owner === PLAYER) { log(g, `Attack on ${n.name} failed: ${r.atk} against ${r.def}`, 'bad', n.id); g.stats.dronesLost += s.drones; }
@@ -431,6 +466,11 @@ export function arrive(g: Game, s: Ship) {
 }
 
 function convoyArrive(g: Game, s: Ship, n: GNode) {
+  // auto-route: hop on to the next node while the corridor chain still holds
+  if (n.owner === s.owner && s.path && s.path.length) {
+    const next = s.path[0];
+    if (corridorBetween(g, n.id, next) && g.nodes[next].owner === s.owner) { s.path.shift(); s.from = n.id; s.to = next; return; }
+  }
   if (n.owner !== s.owner && s.drones > 0) {
     const sm = shipMods(g, s), r = calcBattle(g, s.drones, sm, n, nodeMods(g, n));
     if (r.win) capture(g, n, s, r, sm); else { repel(g, n, s, r, sm); return; }
@@ -443,6 +483,22 @@ function convoyArrive(g: Game, s: Ship, n: GNode) {
 
 // ---------------------------------------------------------------- corridors
 export const corridorsAt = (g: Game, id: number) => g.corridors.filter(c => c.a === id || c.b === id);
+export const corridorMax = (g: Game) => CFG.corridorMax + (sideMods(g, PLAYER).corridorMax || 0);
+/** Shortest chain of corridors from a to b (list of node ids after a), or null. */
+export function corridorPath(g: Game, a: number, b: number): number[] | null {
+  const prev = new Map<number, number>([[a, -1]]), q = [a];
+  while (q.length) {
+    const x = q.shift()!;
+    if (x === b) break;
+    for (const c of corridorsAt(g, x)) { const y = c.a === x ? c.b : c.a; if (!prev.has(y) && g.nodes[y].owner === PLAYER) { prev.set(y, x); q.push(y); } }
+  }
+  if (!prev.has(b) || a === b) return null;
+  const path: number[] = [];
+  for (let x = b; x !== a; x = prev.get(x)!) path.unshift(x);
+  return path;
+}
+/** Every node reachable from a through your corridors. */
+export const corridorReach = (g: Game, a: number) => g.nodes.filter(n => n.id !== a && n.owner === PLAYER && corridorPath(g, a, n.id)).map(n => n.id);
 export const corridorBetween = (g: Game, a: number, b: number) => g.corridors.find(c => (c.a === a && c.b === b) || (c.a === b && c.b === a));
 const pendingCorridors = (g: Game, id: number) => g.nodes.reduce((k, o) => k + [o.lane, ...o.queue].filter(t => t && t.kind === 'corridor' && (o.id === id || +t.id === id)).length, 0);
 export function canCorridor(g: Game, a: GNode, b: GNode): string | null {
@@ -450,7 +506,8 @@ export function canCorridor(g: Game, a: GNode, b: GNode): string | null {
   if (a.owner !== PLAYER || b.owner !== PLAYER) return 'Both ends must be your nodes';
   if (dist(a, b) > CFG.corridorRange) return `Too far (corridors reach ${CFG.corridorRange})`;
   if (corridorBetween(g, a.id, b.id) || [a.lane, ...a.queue, b.lane, ...b.queue].some(t => t && t.kind === 'corridor' && (+t.id === a.id || +t.id === b.id))) return 'Already linked or being built';
-  for (const n of [a, b]) if (corridorsAt(g, n.id).filter(c => !c.until).length + pendingCorridors(g, n.id) >= CFG.corridorMax) return `${n.name} already has ${CFG.corridorMax} corridors`;
+  const mx = corridorMax(g);
+  for (const n of [a, b]) if (corridorsAt(g, n.id).filter(c => !c.until).length + pendingCorridors(g, n.id) >= mx) return `${n.name} already has ${mx} corridors`;
   if (a.queue.length >= 4) return 'Queue full';
   if (g.sides[PLAYER].ult < CFG.corridorCost) return 'Not enough Ultanium';
   return null;
@@ -466,13 +523,14 @@ export function startCorridor(g: Game, a: GNode, b: GNode): string | null {
 /** Send Drones and specialists through a corridor: no ship, no loading, double speed. */
 export function transfer(g: Game, a: GNode, b: GNode, drones: number, specIds: number[]): string | null {
   if (a.owner !== PLAYER || b.owner !== PLAYER) return 'Both ends must be your nodes';
-  if (!corridorBetween(g, a.id, b.id)) return 'No corridor between these nodes';
+  const path = corridorPath(g, a.id, b.id);
+  if (!path) return 'No corridor route to that node';
   drones = Math.max(0, Math.min(a.drones, Math.floor(drones)));
   specIds = specIds.filter(i => a.specs.includes(i));
   if (!drones && !specIds.length) return 'Nothing to send';
   if (specIds.length > slots(g, PLAYER)) return `At most ${slots(g, PLAYER)} specialists at once`;
   const s = newShip(g, PLAYER, a);
-  s.lane = true; s.at = -1; s.to = b.id; s.from = a.id; s.drones = drones; a.drones -= drones;
+  s.lane = true; s.at = -1; s.to = path[0]; s.path = path.slice(1); s.from = a.id; s.drones = drones; a.drones -= drones;
   for (const i of specIds) toShip(g, g.specs[i], s);
   g.modV++;
   return null;
@@ -492,7 +550,7 @@ export function swapSpec(g: Game, sp: Spec, s: Ship): string | null {
 export function canTarget(g: Game, to: GNode): boolean {
   return to.owner === PLAYER || g.vis[to.id] >= 1 || ((sideMods(g, PLAYER).remember || 0) > 0 && g.intel[to.id].seen >= 1);
 }
-export function shipSpeed(g: Game, s: Ship) { return CFG.shipSpeed * (s.lane ? CFG.corridorSpeed : 1) * Math.max(0.3, 1 + (shipMods(g, s).speed || 0)); }
+export function shipSpeed(g: Game, s: Ship) { const m = shipMods(g, s); return CFG.shipSpeed * (s.lane ? CFG.corridorSpeed * (1 + (m.laneSpeed || 0)) : 1) * Math.max(0.3, 1 + (m.speed || 0)); }
 export function eta(g: Game, s: Ship, to: GNode) { return dist(s, to) / shipSpeed(g, s); }
 
 export function launch(g: Game, s: Ship, to: GNode, drones: number, specIds: number[]): string | null {
@@ -550,7 +608,7 @@ export function addXp(g: Game, n: number) {
 }
 export function offerSpec(g: Game, nodeId: number) {
   const owned = new Set(g.specs.filter(s => s.owner === PLAYER).map(s => s.def));
-  const opts = sample(g, PLANET_POOL.filter(d => !owned.has(d)), 3);
+  const opts = sample(g, PLANET_POOL.filter(d => !owned.has(d)), 3 + (sideMods(g, PLAYER).offer || 0));
   if (!opts.length) { g.sides[PLAYER].ult += 20; return; }
   g.pending.push({ kind: 'spec', node: nodeId, opts, title: `Residents of ${g.nodes[nodeId].name}` });
 }
@@ -575,14 +633,15 @@ export function applyFx(g: Game, n: GNode, list: Fx[]) {
       case 'ship': newShip(g, PLAYER, n); break;
       case 'spec': offerSpec(g, n.id); break;
       case 'xp': addXp(g, fx[1]); break;
-      case 'buff': n.buffs.push({ k: fx[1], v: fx[2], until: g.t + fx[3] }); break;
+      case 'buff': n.buffs.push({ k: fx[1], v: fx[2], until: g.t + fx[3] }); if (fx[1] === 'def') n.shields += fx[2]; break;
       case 'mobil': g.mob.prog = Math.max(0, Math.min(0.99, g.mob.prog + fx[1])); break;
       case 'hold': n.hold = { until: g.t + fx[1], total: fx[1], need: fx[2], fx: fx[3], name: n.event ? EVENTS[n.event].name : 'Operation' }; break;
       case 'reveal':
         for (const o of g.nodes) if (dist(o, n) <= fx[1]) { o.buffs.push({ k: 'scan', v: 1, until: g.t + 45 }); }
         updateVision(g); break;
       case 'build': {
-        const id = n.kind === 'planet' ? 'shield' : (n.b.turret || 0) < BUILD.turret.max ? 'turret' : 'screen';
+        const id = n.kind === 'planet' ? 'shield' : 'sshield';
+        if ((n.b[id] || 0) >= BUILD[id].max) { g.sides[PLAYER].ult += 20; break; }
         n.b[id] = (n.b[id] || 0) + 1; break;
       }
       case 'ambush': {
@@ -623,6 +682,7 @@ export function choose(g: Game, idx: number): string | null {
     log(g, `${ev.name}: ${c.label}`, 'info', n.id);
     return null;
   }
+  if (p.kind === 'crew') { g.pending.shift(); return null; }
   const o = p.opts[idx];
   if (o === undefined) return 'Pick one';
   g.pending.shift();
@@ -699,9 +759,9 @@ export function coreStep(g: Game) {
       }
     }
     const tm = nodeMods(g, n);
-    const nm = n.owner === 0 ? (n.kind === 'planet' ? CFG.natBySize[n.size] : 0) : natMax(g, n, tm);
-    if (n.nat < nm && !tm.noRegen) n.nat = Math.min(nm, n.nat + dt * (1 + (tm.natRegen || 0) + 0.5 * (n.b.shield || 0)) / CFG.natRegenSecs);
-    else if (n.nat > nm) n.nat = nm;
+    const nm = shieldMax(g, n, tm);
+    if (n.shields < nm && !tm.noRegen) n.shields = Math.min(nm, n.shields + (dt * (1 + (tm.natRegen || 0))) / CFG.shieldRegenSecs);
+    else if (n.shields > nm) n.shields = nm;
     const side = g.sides[n.owner];
     if (!side) continue;
     const frozen = (tm.frozen || 0) > 0;
@@ -721,7 +781,7 @@ export function coreStep(g: Game) {
     if (n.research && ops.resOn) {
       const id = n.research;
       side.techProg[id] = (side.techProg[id] || 0) + dt * (1 + (tm.research || 0));
-      if (side.techProg[id] >= TECH_TIME[TECHS[id].tier]) grantTech(g, n.owner, id);
+      if (side.techProg[id] >= techTime(id)) grantTech(g, n.owner, id);
     }
     if (n.hold && g.t >= n.hold.until) {
       const h = n.hold; n.hold = null;
@@ -757,6 +817,8 @@ export function coreStep(g: Game) {
         const cap = slots(g, s.owner);
         for (const id of s.specs.slice()) if (n.specs.length < cap) toNode(g, g.specs[id], n);
         s.unload = false;
+        if (s.owner === PLAYER && s.specs.length && !g.pending.some(p => p.kind === 'crew' && p.opts[0] === s.id))
+          g.pending.push({ kind: 'crew', node: n.id, opts: [s.id], title: `${n.name} is full` });
       }
       continue;
     }

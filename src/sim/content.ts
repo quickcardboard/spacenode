@@ -3,8 +3,8 @@ import type { Mods, Fx } from './types';
 // ---------------------------------------------------------------------------------------------
 // Modifier keys (all numeric; flags are > 0). Sources: specialists at a location, buffs, relics,
 // technologies, commander perks and faction traits.
-//   node:  def mine build research prod batch fov natRegen natMax cap capPct mineSlots preKill
-//          martyr launchSpeed structDef
+//   node:  def mine build research prod batch fov natRegen shieldMax cap capPct mineSlots preKill
+//          martyr launchSpeed structDef (turret kills) natRegen (shield recharge) shieldMax def (shield capacity)
 //   ship:  speed atk atkPct atkPer8 vsNeutral ignStruct ignNat structHalf stealth surv redirect
 //          noLoad salvage
 //   side:  droneCap cd shipCost shipSpeed warn ties ransom prisonInc xp slots scoutReturn sigint
@@ -37,7 +37,7 @@ S({ id: 'admiral', name: 'Admiral', tag: 'Ad', color: C.fleet, role: 'Fleet mobi
   active: A('fullburn', 'Full Burn', 120, 'self', 'ship', 'This ship gains +50% speed for 30 s.') });
 S({ id: 'engineer', name: 'Engineer', tag: 'En', color: C.eco, role: 'Construction', starter: true,
   passive: 'Construction here is 25% faster.', loc: { build: 0.25 },
-  active: A('repair', 'Emergency Repair', 120, 'self', 'node', 'Cut 25 s off the current build and fully restore natural defence.') });
+  active: A('repair', 'Emergency Repair', 120, 'self', 'node', 'Cut 25 s off the current build and fully recharge shields.') });
 S({ id: 'quartermaster', name: 'Quartermaster', tag: 'Qm', color: C.eco, role: 'Economy', starter: true,
   passive: 'Mines here produce 20% more.', loc: { mine: 0.2 },
   active: A('surge', 'Surge Mining', 180, 'self', 'planet', '+50% mine output here for 60 s.') });
@@ -46,14 +46,14 @@ S({ id: 'scout', name: 'Scout', tag: 'Sc', color: C.intel, role: 'Intelligence',
   active: A('deepscan', 'Deep Scan', 90, 'node', 'any', 'Fully identify one detected node for 60 s.') });
 S({ id: 'tactician', name: 'Tactician', tag: 'Ta', color: C.war, role: 'Combat', starter: true,
   passive: 'Attacks from this ship gain +1 strength per 8 Drones (max +4).', loc: { atkPer8: 4 },
-  active: A('flank', 'Flank', 180, 'self', 'ship', 'This ship\'s next attack ignores natural defence.') });
+  active: A('flank', 'Flank', 180, 'self', 'ship', 'This ship\'s next attack ignores shields.') });
 
 // --- Found on neutral planets ---
 S({ id: 'sentinel', name: 'Sentinel', tag: 'Se', color: C.def, role: 'Defence',
-  passive: '+3 defence at this node.', loc: { def: 3 },
-  active: A('lockdown', 'Lockdown', 150, 'self', 'node', '+6 defence here for 45 s.') });
+  passive: '+3 shield at this node.', loc: { def: 3 },
+  active: A('lockdown', 'Lockdown', 150, 'self', 'node', '+6 shield here for 45 s, filled at once.') });
 S({ id: 'saboteur', name: 'Saboteur', tag: 'Sb', color: C.intel, role: 'Disruption',
-  passive: 'Attacks from this ship face 25% weaker structures.', loc: { structHalf: 0.25 },
+  passive: 'Enemy turrets shoot down 25% fewer of this ship\'s Drones.', loc: { structHalf: 0.25 },
   active: A('sabotage', 'Sabotage', 180, 'enemy', 'any', 'Freeze all construction and Drone production at an identified enemy node for 45 s.') });
 S({ id: 'diplomat', name: 'Diplomat', tag: 'Di', color: C.eco, role: 'Neutral expansion',
   passive: 'Attacks on neutral nodes from this ship face 3 less defence.', loc: { vsNeutral: 3 },
@@ -83,8 +83,8 @@ S({ id: 'ghost', name: 'Ghost', tag: 'Gh', color: C.intel, role: 'Stealth',
   passive: 'The ship carrying the Ghost is unseen: the enemy sends no reinforcements against it.', loc: { stealth: 1 },
   active: A('smoke', 'Smoke', 300, 'self', 'node', 'Every enemy fleet currently flying to this node turns back.') });
 S({ id: 'siegebreaker', name: 'Siegebreaker', tag: 'Sg', color: C.war, role: 'Siege',
-  passive: 'Attacks from this ship ignore turrets, screens and bastions.', loc: { ignStruct: 1 },
-  active: A('breach', 'Breach', 180, 'ident', 'any', 'An identified node loses all natural defence and cannot recharge for 60 s.') });
+  passive: 'This ship slips past turrets: none of its Drones are shot down.', loc: { ignStruct: 1 },
+  active: A('breach', 'Breach', 180, 'ident', 'any', 'An identified node loses all shields and cannot recharge for 60 s.') });
 S({ id: 'martyr', name: 'Martyr', tag: 'Ma', color: C.def, role: 'Attrition',
   passive: 'If this node falls, half of the attacker\'s survivors die.', loc: { martyr: 1 },
   active: A('laststand', 'Last Stand', 240, 'self', 'node', 'Drones here count double on defence for 30 s, then a quarter of them are lost.') });
@@ -98,8 +98,8 @@ S({ id: 'smuggler', name: 'Smuggler', tag: 'Sm', color: C.fleet, role: 'Logistic
   passive: 'This ship launches with no loading delay, and you may fly to remembered nodes outside detection.', loc: { noLoad: 1 }, glob: { remember: 1 },
   active: A('fence', 'Fence', 240, 'self', 'any', 'Gain 2 Ultanium for every node you own.') });
 S({ id: 'castellan', name: 'Castellan', tag: 'Cs', color: C.def, role: 'Fortification',
-  passive: 'Natural defence here is +3 and recharges three times as fast.', loc: { natMax: 3, natRegen: 2 },
-  active: A('rampart', 'Rampart', 120, 'self', 'node', 'Restore natural defence here to full.') });
+  passive: 'Shields here +3 and recharge three times as fast.', loc: { shieldMax: 3, natRegen: 2 },
+  active: A('rampart', 'Rampart', 120, 'self', 'node', 'Fully recharge the shields here.') });
 S({ id: 'recruiter', name: 'Recruiter', tag: 'Rt', color: C.war, role: 'Manpower',
   passive: 'Your global Drone cap is 15 higher.', glob: { droneCap: 15 },
   active: A('levy', 'Levy', 240, 'self', 'any', 'Every station you own gains 3 Drones.') });
@@ -122,8 +122,8 @@ S({ id: 'architect', name: 'Architect', tag: 'Ar', color: C.eco, role: 'Corridor
 
 // --- Signature specialists: reward for capturing a faction's Warlord ---
 S({ id: 'ironmonger', name: 'Ironmonger', tag: 'Im', color: '#c98a3c', role: 'Ferrum signature', sig: 'ferrum',
-  passive: 'Structures at this node give 50% more defence.', loc: { structDef: 0.5 },
-  active: A('fortify', 'Fortify', 240, 'self', 'node', 'Build a free Turret (station) or Shield Generator (planet) here instantly.') });
+  passive: 'Turrets at this node destroy 50% more Drones.', loc: { structDef: 0.5 },
+  active: A('fortify', 'Fortify', 240, 'self', 'node', 'Build a free Shield Generator here instantly.') });
 S({ id: 'berserker', name: 'Berserker', tag: 'Bs', color: '#e0524d', role: 'Crimson signature', sig: 'crimson',
   passive: 'Attacks from this ship are 20% stronger.', loc: { atkPct: 0.2 },
   active: A('bloodrush', 'Bloodrush', 200, 'self', 'ship', 'This ship\'s next attack is +40% stronger but keeps 30% fewer survivors.') });
@@ -138,8 +138,8 @@ S({ id: 'wayfinder', name: 'Wayfinder', tag: 'Wf', color: '#5aa9e6', role: 'Drif
   active: A('warp', 'Fold', 240, 'self', 'ship', 'This ship instantly covers half of its remaining distance.') });
 
 // Enemy leaders (never recruitable)
-S({ id: 'warlord', name: 'Warlord', tag: 'W', color: '#ffffff', role: 'Faction leader', passive: '+5 defence at the capital.', loc: { def: 5 } });
-S({ id: 'archon', name: 'Archon', tag: 'A', color: '#ff5fa2', role: 'Coalition Commander', passive: '+8 defence at the Citadel.', loc: { def: 8 } });
+S({ id: 'warlord', name: 'Warlord', tag: 'W', color: '#ffffff', role: 'Faction leader', passive: '+5 shield at the capital.', loc: { def: 5 } });
+S({ id: 'archon', name: 'Archon', tag: 'A', color: '#ff5fa2', role: 'Coalition Commander', passive: '+8 shield at the Citadel.', loc: { def: 8 } });
 
 export const PLANET_POOL = Object.values(SPECS).filter(s => !s.sig && s.id !== 'warlord' && s.id !== 'archon').map(s => s.id);
 export const STARTERS = Object.values(SPECS).filter(s => s.starter).map(s => s.id);
@@ -155,8 +155,8 @@ export const ARCHS: Record<string, ArchDef> = {
   pathfinder: { id: 'pathfinder', name: 'Pathfinder', blurb: 'Controls tempo and information.', passive: 'Commander\'s ship is 20% faster and can be redirected; their node sees 25% further.', loc: { speed: 0.2, redirect: 1, fov: 0.25 },
     a: A('slipstream', 'Slipstream', 150, 'self', 'ship', 'This ship flies at double speed for 40 s.'),
     b: A('sweep', 'Survey Sweep', 200, 'self', 'any', 'Identify every node within 200 units for 45 s.') },
-  warden: { id: 'warden', name: 'Warden', blurb: 'Keeps forces alive.', passive: '+4 defence and double natural-defence recharge at the Commander\'s node.', loc: { def: 4, natRegen: 1 },
-    a: A('aegis', 'Aegis', 180, 'self', 'node', '+10 defence here for 45 s.'),
+  warden: { id: 'warden', name: 'Warden', blurb: 'Keeps forces alive.', passive: '+4 shield and double shield recharge at the Commander\'s node.', loc: { def: 4, natRegen: 1 },
+    a: A('aegis', 'Aegis', 180, 'self', 'node', '+10 shield here for 45 s, filled at once.'),
     b: A('recall', 'Recall', 300, 'self', 'any', 'The Commander and every specialist with them return home instantly.') },
   industrialist: { id: 'industrialist', name: 'Industrialist', blurb: 'Builds a stronger empire.', passive: 'Mines +20% and construction +30% at the Commander\'s node.', loc: { mine: 0.2, build: 0.3 },
     a: A('crash', 'Crash Program', 200, 'self', 'node', 'Finish the current build here instantly.'),
@@ -177,7 +177,7 @@ export const PERKS: PerkDef[] = [
   { id: 'march', name: 'Forced March', desc: 'Commander\'s ship +20% speed.', loc: { speed: 0.2 } },
   { id: 'logi', name: 'Logistician', desc: 'Global Drone cap +20.', glob: { droneCap: 20 } },
   { id: 'tithe', name: 'Tithe', desc: '+3 Ultanium/min.', glob: { incomeFlat: 3 } },
-  { id: 'hard', name: 'Hardliner', desc: '+4 defence at the Commander\'s node.', loc: { def: 4 } },
+  { id: 'hard', name: 'Hardliner', desc: '+4 shield at the Commander\'s node.', loc: { def: 4 } },
   { id: 'shock', name: 'Shock Tactics', desc: 'Commander\'s attacks +4 strength.', loc: { atk: 4 } },
   { id: 'mentor', name: 'Mentor', desc: 'All ability cooldowns 15% shorter.', glob: { cd: 0.15 } },
   { id: 'scholar', name: 'Scholar', desc: 'All research 20% faster.', glob: { research: 0.2 } },
@@ -185,7 +185,7 @@ export const PERKS: PerkDef[] = [
   { id: 'farsight', name: 'Far Sight', desc: 'All your nodes see 15% further.', glob: { fov: 0.15 } },
   { id: 'requisition', name: 'Requisition', desc: 'Ships cost 30% less.', glob: { shipCost: 0.3 } },
   { id: 'entourage', name: 'Entourage', desc: 'Nodes and ships hold one more specialist.', glob: { slots: 1 } },
-  { id: 'sapper', name: 'Sapper', desc: 'Commander\'s attacks ignore natural defence.', loc: { ignNat: 1 } },
+  { id: 'sapper', name: 'Sapper', desc: 'Commander\'s attacks ignore shields.', loc: { ignNat: 1 } },
   { id: 'magnate', name: 'Magnate', desc: 'All mines +10%.', glob: { mine: 0.1 } },
 ];
 
@@ -202,59 +202,78 @@ R('propulsion', 'Emergency Propulsion Core', 'common', 'All ships +12% speed.', 
 R('salvage', 'Salvage Protocol', 'common', 'Winning attacks yield 0.5 Ultanium per enemy Drone destroyed.', { salvage: 0.5 });
 R('scaffold', 'Modular Scaffolds', 'common', 'Construction 25% faster.', { build: 0.25 });
 R('reserve', 'Reserve Barracks', 'common', 'Global Drone cap +20.', { droneCap: 20 });
-R('bulkhead', 'Hardened Bulkheads', 'common', '+1 defence at every node.', { def: 1 });
+R('bulkhead', 'Hardened Bulkheads', 'common', '+1 shield at every node.', { def: 1 });
 R('archive', 'Field Archive', 'common', 'Research 25% faster.', { research: 0.25 });
 R('ledger', 'Ration Ledger', 'common', '+3 Ultanium/min.', { incomeFlat: 3 });
 R('clamps', 'Quick-Load Clamps', 'common', 'Ships launch with no loading delay.', { noLoad: 1 });
 R('mirror', 'Signal Mirror', 'common', 'Coalition offensives are announced with their target.', { warn: 1 });
-R('adaptive', 'Adaptive Shield Network', 'uncommon', 'Nodes you capture gain +6 defence for 60 s.', { capShield: 6 });
+R('adaptive', 'Adaptive Shield Network', 'uncommon', 'Nodes you capture gain +6 shield for 60 s.', { capShield: 6 });
 R('matrix', 'Specialist Command Matrix', 'uncommon', 'Ability cooldowns 20% shorter.', { cd: 0.2 });
 R('lantern', 'Ghost Lanterns', 'uncommon', 'Unmanned scouts survive and fly home.', { scoutReturn: 1 });
 R('warchest', 'War Chest', 'uncommon', 'Gain 6 Ultanium whenever you capture a node.', { capUlt: 6 });
 R('phalanx', 'Phalanx Doctrine', 'uncommon', 'All attacks 8% stronger.', { atkPct: 0.08 });
 R('titheengine', 'Tithe Engine', 'uncommon', 'Ransoms pay double; each prisoner yields +1 Ultanium/min.', { ransom: 1, prisonInc: 1 });
 R('yards', 'Overclocked Yards', 'uncommon', 'Ships cost 30% less and build 30% faster.', { shipCost: 0.3, shipSpeed: 0.3 });
-R('lattice', 'Regrowth Lattice', 'uncommon', 'Natural defence +2 and recharges twice as fast.', { natRegen: 1, natMax: 2 });
+R('lattice', 'Regrowth Lattice', 'uncommon', 'Shields +2 everywhere and recharge twice as fast.', { natRegen: 1, shieldMax: 2 });
 R('charts', 'Cartel Charts', 'uncommon', 'You may fly to remembered nodes outside detection range.', { remember: 1 });
 R('cadre', 'Veteran Cadre', 'uncommon', 'Winning attacks keep 15% more survivors.', { surv: 0.15 });
 R('budget', 'Black Budget', 'uncommon', 'Research costs 30% less.', { techCost: 0.3 });
-R('charter', 'Bulwark Charter', 'uncommon', 'Structures give 25% more defence.', { structDef: 0.25 });
+R('charter', 'Bulwark Charter', 'uncommon', 'Your turrets destroy 25% more Drones.', { structDef: 0.25 });
 R('sigil', 'Tiebreaker Sigil', 'rare', 'You win tied battles when attacking.', { ties: 1 });
 R('phoenix', 'Phoenix Clause', 'rare', 'Once every 180 s, a node capture refunds the Drones it cost.', { refund: 180 });
 R('chair', 'Fourth Chair', 'rare', 'Nodes and ships hold one more specialist.', { slots: 1 });
 R('crown', 'Hollow Crown', 'rare', 'Commander rescue window +90 s.', { rescue: 90 });
 R('stillness', 'Stillness Engine', 'rare', 'Coalition mobilization is 25% slower.', { mobSlow: 0.25 });
 R('twin', 'Twin Minds', 'rare', 'The Commander\'s passive effects count twice.', { cmdDouble: 1 });
-R('lance', 'Null Lance', 'rare', 'Your attacks ignore natural defence.', { ignNat: 1 });
+R('lance', 'Null Lance', 'rare', 'Your attacks ignore shields.', { ignNat: 1 });
 R('hold', 'Bottomless Hold', 'rare', 'Every planet has +1 mine slot and +3 capacity.', { mineSlots: 1, cap: 3 });
 R('edict', 'Conscription Edict', 'rare', 'Every node you own gains 1 Drone each minute.', { levy: 60 });
 R('seal', 'Oathbreaker\'s Seal', 'rare', 'You may recruit prisoners for 40 Ultanium without an Inquisitor.', { recruit: 1 });
 R('night', 'Long Night', 'rare', 'All of your fleets fly unseen.', { stealth: 1 });
-R('choir', 'Siege Choir', 'rare', 'Your attacks face structures at half strength.', { structHalf: 0.5 });
+R('choir', 'Siege Choir', 'rare', 'Enemy turrets shoot down half as many of your Drones.', { structHalf: 0.5 });
 
 // ---------------------------------------------------------------------------------------------
 // Research: five branches, three tiers each. Any technology with its prerequisite met is available.
 // ---------------------------------------------------------------------------------------------
-export interface TechDef { id: string; name: string; branch: string; tier: number; pre?: string; desc: string; mods: Mods }
-export const TECH_COST = [0, 30, 48, 70], TECH_TIME = [0, 90, 150, 210], TECH_OPS = [0, 2, 3, 4];
+// Five branches. Tier 3 in every branch is a doctrine pair: researching one locks the other for the run.
+// Each branch ends in a repeatable technology whose cost rises with every level, as a late-game sink.
+export interface TechDef { id: string; name: string; branch: string; tier: number; pre?: string; desc: string; mods: Mods; excl?: string; rep?: number }
+export const TECH_COST = [0, 40, 80, 140, 240], TECH_TIME = [0, 60, 90, 120, 180], TECH_OPS = [0, 2, 3, 4, 5];
+export const REP = { cost: 60, growth: 1.5, time: 75, ops: 3 };
 export const TECHS: Record<string, TechDef> = {};
-const T = (id: string, name: string, branch: string, tier: number, pre: string | undefined, desc: string, mods: Mods) =>
-  (TECHS[id] = { id, name, branch, tier, pre, desc, mods });
+export const BRANCHES = ['Industry', 'Military', 'Navigation', 'Intelligence', 'Command'];
+const T = (id: string, name: string, branch: string, tier: number, pre: string | undefined, desc: string, mods: Mods, extra: Partial<TechDef> = {}) =>
+  (TECHS[id] = { id, name, branch, tier, pre, desc, mods, ...extra });
 T('extraction', 'Advanced Extraction', 'Industry', 1, undefined, 'Mines +15%.', { mine: 0.15 });
 T('automation', 'Industrial Automation', 'Industry', 2, 'extraction', 'Mines no longer need Drones to operate.', { noOps: 1 });
-T('deepcore', 'Deep-Core Drilling', 'Industry', 3, 'automation', 'Planet capacity +25% and +1 mine slot.', { capPct: 0.25, mineSlots: 1 });
+T('deepcore', 'Deep-Core Drilling', 'Industry', 3, 'automation', 'Planet capacity +25% and +1 mine slot.', { capPct: 0.25, mineSlots: 1 }, { excl: 'supply' });
+T('supply', 'Supply Network', 'Industry', 3, 'automation', 'Drone cap +40. Mustering costs 1 less per Drone.', { droneCap: 40, musterCost: 1 }, { excl: 'deepcore' });
+T('foundries', 'Orbital Foundries', 'Industry', 4, 'automation', 'Ships cost 40% less and build 40% faster; Habitats give +10 more cap.', { shipCost: 0.4, shipSpeed: 0.4, habitat: 10 });
+T('refinery', 'Refinery Tuning', 'Industry', 5, 'extraction', 'Mines +5% per level.', { mine: 0.05 }, { rep: 10 });
 T('coord', 'Combat Coordination', 'Military', 1, undefined, 'Attacks 10% stronger.', { atkPct: 0.1 });
-T('fort', 'Fortification Systems', 'Military', 2, 'coord', 'Unlocks the Bastion; structures give 25% more defence.', { unlockBastion: 1, structDef: 0.25 });
-T('siege', 'Siege Doctrine', 'Military', 3, 'fort', 'Attacks face structures at half strength.', { structHalf: 0.5 });
+T('fort', 'Shield Harmonics', 'Military', 2, 'coord', 'Shields recharge twice as fast.', { natRegen: 1 });
+T('siege', 'Siege Doctrine', 'Military', 3, 'fort', 'Enemy turrets shoot down half as many of your Drones; your attacks ignore 5 shield.', { structHalf: 0.5, shieldPierce: 5 }, { excl: 'depth' });
+T('depth', 'Defence in Depth', 'Military', 3, 'fort', 'Your turrets destroy 50% more; Drone batches +2.', { structDef: 0.5, batch: 2 }, { excl: 'siege' });
+T('overwhelm', 'Overwhelming Force', 'Military', 4, 'fort', 'Attacks 10% stronger and winners keep 25% more survivors.', { atkPct: 0.1, surv: 0.25 });
+T('conditioning', 'Drone Conditioning', 'Military', 5, 'coord', 'Attacks +3% per level.', { atkPct: 0.03 }, { rep: 10 });
 T('engines', 'Improved Engines', 'Navigation', 1, undefined, 'Ships +15% speed.', { speed: 0.15 });
-T('sensors', 'Long-Range Sensors', 'Navigation', 2, 'engines', 'All nodes see 20% further.', { fov: 0.2 });
-T('reroute', 'Slipstream Rerouting', 'Navigation', 3, 'sensors', 'Any ship can be redirected once per flight.', { redirect: 1 });
+T('sensors', 'Long-Range Sensors', 'Navigation', 2, 'engines', 'All nodes and ships see 20% further.', { fov: 0.2 });
+T('reroute', 'Slipstream Rerouting', 'Navigation', 3, 'sensors', 'Any ship can be redirected once per flight.', { redirect: 1 }, { excl: 'widecorr' });
+T('widecorr', 'Wide Corridors', 'Navigation', 3, 'sensors', 'Each node holds one more corridor; corridors build 50% faster and carry convoys 50% faster.', { corridorMax: 1, corridor: 0.5, laneSpeed: 0.5 }, { excl: 'reroute' });
+T('fold', 'Fold Drive', 'Navigation', 4, 'sensors', 'Ships +25% speed and launch without loading.', { speed: 0.25, noLoad: 1 });
+T('thrusters', 'Thruster Tuning', 'Navigation', 5, 'engines', 'Ships +4% speed per level.', { speed: 0.04 }, { rep: 10 });
 T('sigint', 'Signal Analysis', 'Intelligence', 1, undefined, 'See the strength of every detected enemy fleet.', { sigint: 1 });
-T('recon', 'Recon Drones', 'Intelligence', 2, 'sigint', 'Unmanned scouts survive and fly home.', { scoutReturn: 1 });
-T('deepcover', 'Deep Cover', 'Intelligence', 3, 'recon', 'Offensives are announced with their target; mobilization 15% slower.', { warn: 1, mobSlow: 0.15 });
+T('recon', 'Recon Optics', 'Intelligence', 2, 'sigint', 'Ships see 50% further; unmanned scouts fly home.', { scoutReturn: 1, shipFov: 0.5 });
+T('deepcover', 'Deep Cover', 'Intelligence', 3, 'recon', 'Offensives are announced with their target; mobilization 15% slower.', { warn: 1, mobSlow: 0.15 }, { excl: 'battery' });
+T('battery', 'Counter-Battery', 'Intelligence', 3, 'recon', 'Your turrets destroy 50% more and cannot be slipped past by unseen fleets.', { structDef: 0.5, seeStealth: 1 }, { excl: 'deepcover' });
+T('blacksky', 'Black Sky', 'Intelligence', 4, 'recon', 'All your fleets fly unseen and slip past turrets.', { stealth: 1 });
+T('dampening', 'Signal Dampening', 'Intelligence', 5, 'sigint', 'Mobilization 4% slower per level.', { mobSlow: 0.04 }, { rep: 8 });
 T('training', 'Specialist Training', 'Command', 1, undefined, 'Ability cooldowns 20% shorter.', { cd: 0.2 });
 T('protocols', 'Command Protocols', 'Command', 2, 'training', 'Commander gains 50% more experience; rescue window +30 s.', { xp: 0.5, rescue: 30 });
-T('integration', 'Command Integration', 'Command', 3, 'protocols', 'Nodes and ships hold one more specialist.', { slots: 1 });
+T('integration', 'Command Integration', 'Command', 3, 'protocols', 'Nodes and ships hold one more specialist.', { slots: 1 }, { excl: 'cadre' });
+T('cadre', 'Talent Scouts', 'Command', 3, 'protocols', 'Recruitment offers one more specialist to choose from, and Drone cap +20.', { offer: 1, droneCap: 20 }, { excl: 'integration' });
+T('highcommand', 'High Command', 'Command', 4, 'protocols', 'Ability cooldowns 25% shorter; rescue window +60 s.', { cd: 0.25, rescue: 60 });
+T('officers', 'Officer School', 'Command', 5, 'training', 'Ability cooldowns 3% shorter per level.', { cd: 0.03 }, { rep: 10 });
 
 // ---------------------------------------------------------------------------------------------
 // Enemy factions (three per run) and Archons (one per run)
@@ -266,8 +285,8 @@ export interface FactionDef {
 }
 export const FACTIONS: Record<string, FactionDef> = {
   ferrum: { id: 'ferrum', name: 'Ferrum Directorate', color: '#c98a3c', warlord: 'Overseer Kharn', sig: 'ironmonger',
-    desc: 'Fortress industry. Slow to attack, expensive to dislodge.', tell: '+2 defence everywhere; builds turrets and shields relentlessly.',
-    mods: { def: 2, build: 0.3 }, ai: { aggr: 0.6, expand: 150, react: 0.9, target: 'weak', build: { turret: 5, shield: 5, screen: 3, mine: 3, gen: 3, barracks: 1 } },
+    desc: 'Fortress industry. Slow to attack, expensive to dislodge.', tell: '+2 shield everywhere; builds turrets and shields relentlessly.',
+    mods: { def: 2, build: 0.3 }, ai: { aggr: 0.6, expand: 150, react: 0.9, target: 'weak', build: { turret: 4, shield: 5, sshield: 4, mine: 3, gen: 3, barracks: 1 } },
     techs: ['fort', 'extraction', 'automation', 'siege'], specs: ['sentinel', 'castellan', 'engineer'] },
   crimson: { id: 'crimson', name: 'Crimson Warhost', color: '#d2604a', warlord: 'Warlord Ashka', sig: 'berserker',
     desc: 'Wave aggression. Thin defences, constant pressure.', tell: 'Drones produced 35% faster; attacks the nearest target often.',
@@ -275,7 +294,7 @@ export const FACTIONS: Record<string, FactionDef> = {
     techs: ['coord', 'engines', 'siege', 'training'], specs: ['foreman', 'vanguard', 'tactician'] },
   lumen: { id: 'lumen', name: 'Lumen Technocracy', color: '#e3c565', warlord: 'Prime Calculator Ione', sig: 'lens',
     desc: 'Lance batteries thin every attacking fleet before it lands.', tell: 'Destroys 15% of attackers before battle; gains two technologies per stage.',
-    mods: { preKill: 0.15, natMax: 3 }, ai: { aggr: 0.8, expand: 170, react: 0.7, target: 'weak', build: { shield: 4, sensor: 2, turret: 2, mine: 3, gen: 3, screen: 2 } },
+    mods: { preKill: 0.15, shieldMax: 3 }, ai: { aggr: 0.8, expand: 170, react: 0.7, target: 'weak', build: { shield: 4, sensor: 2, turret: 2, mine: 3, gen: 3, sshield: 2 } },
     techs: ['sigint', 'fort', 'coord', 'engines', 'siege', 'extraction', 'training', 'sensors'], specs: ['scientist', 'sentinel', 'scout'] },
   veil: { id: 'veil', name: 'Veil Syndicate', color: '#9a7cc4', warlord: 'The Whisper', sig: 'phantom',
     desc: 'Unseen fleets that hunt your specialists.', tell: 'Fleets are invisible until inside full-intelligence range; targets nodes holding specialists.',
@@ -313,7 +332,7 @@ E('lab', 'Abandoned Research Facility', 'station', 'Sealed laboratories, still p
   { label: 'Let the Scientist decode it', desc: 'Free technology and a common relic.', req: 'scientist', fx: [['tech'], ['relic', 'common']] },
 ]);
 E('fortress', 'Ancient Fortress', 'any', 'The guns are silent but the targeting grid still tracks your ship.', [
-  { label: 'Reactivate the defences', desc: 'Hold this node for 90 s with 10 Drones to gain a Turret or Shield here and an uncommon relic.', fx: [['hold', 90, 10, [['build', 'def'], ['relic', 'uncommon']]]] },
+  { label: 'Reactivate the defences', desc: 'Hold this node for 90 s with 10 Drones to gain a Shield Generator here and an uncommon relic.', fx: [['hold', 90, 10, [['build', 'def'], ['relic', 'uncommon']]]] },
   { label: 'Strip the armoury', desc: 'Gain 12 Drones here.', fx: [['drones', 12]] },
   { label: 'Engineer bypass', desc: 'Gain the structure and a common relic at once.', req: 'engineer', fx: [['build', 'def'], ['relic', 'common']] },
 ]);
@@ -343,8 +362,8 @@ E('expedition', 'Lost Research Expedition', 'any', 'Their last transmission repe
   { label: 'Follow the signal', desc: 'Choose a rare relic. Automata attack with 20 Drones in 40 s.', fx: [['relic', 'rare'], ['ambush', 20]] },
 ]);
 E('platform', 'Automated Weapons Platform', 'station', 'It has been guarding nothing for three hundred years, and it is very good at it.', [
-  { label: 'Capture it', desc: 'Gain a Turret here.', fx: [['build', 'def']] },
-  { label: 'Reprogram it', desc: '+8 defence here for 5 minutes and a common relic.', ult: 15, fx: [['buff', 'def', 8, 300], ['relic', 'common']] },
+  { label: 'Capture it', desc: 'Gain a Shield Generator here.', fx: [['build', 'def']] },
+  { label: 'Reprogram it', desc: '+8 shield here for 5 minutes and a common relic.', ult: 15, fx: [['buff', 'def', 8, 300], ['relic', 'common']] },
   { label: 'Scrap it', desc: 'Gain 28 Ultanium.', fx: [['ult', 28]] },
 ]);
 E('beacon', 'Ancient Navigation Beacon', 'any', 'One pulse per minute, aimed at a point deep inside Coalition space.', [

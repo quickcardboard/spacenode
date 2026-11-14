@@ -5,11 +5,13 @@ import { FACTIONS, ARCHONS, ARCHS, STARTERS, EVENTS } from './content';
 import { rnd, ri, rr, pick, shuffle, sample } from './rng';
 import { addSpec, newShip, updateVision, dist } from './core';
 
+// Stations are named like hull registrations: Name-Number. Planets get two-syllable names.
+const STATION_NAMES = ['Kestrel', 'Bastille', 'Harrow', 'Vigil', 'Anchor', 'Lantern', 'Marrow', 'Cinder', 'Tether', 'Gantry', 'Rook', 'Ward', 'Halcyon', 'Talon', 'Spindle', 'Ember', 'Quarry', 'Beacon', 'Keel', 'Sable'];
 const SYL_A = ['Ka', 'Ve', 'Or', 'Tal', 'Mi', 'Sen', 'Dra', 'Ul', 'Phe', 'Ny', 'Cor', 'Az', 'Lo', 'Ery', 'Bri', 'Zan', 'Hel', 'Qua', 'Io', 'Xe'];
 const SYL_B = ['ris', 'dan', 'thos', 'mir', 'vek', 'lun', 'tar', 'ion', 'sha', 'bor', 'nea', 'rax', 'phi', 'dor', 'lys', 'gan', 'tis', 'mon', 'rae', 'kai'];
 
 function mkSide(owner: number, kind: Side['kind'], fac: string, ult: number): Side {
-  return { owner, kind, fac, ult, techs: [], techProg: {}, relics: [], broken: false, aiT: 6 + owner * 2, expT: 60 + owner * 15, capBase: 0, refundT: 0, levyT: 60 };
+  return { owner, kind, fac, ult, techs: [], techProg: {}, techLv: {}, relics: [], broken: false, aiT: 6 + owner * 2, expT: 60 + owner * 15, capBase: 0, refundT: 0, levyT: 60 };
 }
 
 export function newGame(seed: number, threat = 0): Game {
@@ -71,14 +73,14 @@ export function newGame(seed: number, threat = 0): Game {
     const th = Math.max(0, Math.min(1, dist(p, home) / span + rr(g, -0.12, 0.12)));
     const n: GNode = {
       id, name: name(), kind: 'planet', x: p.x, y: p.y, size: 0, owner: p.region, region: p.region, threat: th,
-      drones: 0, nat: 0, b: {}, lane: null, queue: [], prod: 0, research: null, resFirst: false,
+      drones: 0, shields: 0, b: {}, lane: null, queue: [], prod: 0, research: null, resFirst: false,
       specs: [], prisoners: [], buffs: [], event: null, offer: false, hold: null, conv: null,
       capital: false, citadel: false, home: false,
     };
     const roll = rnd(g);
     n.size = roll < 0.35 ? 0 : roll < 0.8 ? 1 : 2;
-    if (p === home) { n.kind = 'station'; n.home = true; n.drones = CFG.startDrones; n.name = 'Haven'; }
-    else if (p === cit) { n.kind = 'station'; n.citadel = true; n.name = 'The Citadel'; n.drones = Math.round(46 * hard); n.b = { turret: 3, screen: 1, barracks: 1, shipyard: 1, dock: 2 }; }
+    if (p === home) { n.kind = 'station'; n.home = true; n.drones = CFG.startDrones; n.name = 'Haven'; n.b = { sshield: 1 }; }
+    else if (p === cit) { n.kind = 'station'; n.citadel = true; n.name = 'The Citadel'; n.drones = Math.round(46 * hard); n.b = { turret: 3, sshield: 4, barracks: 1, shipyard: 1, dock: 2 }; }
     else if (p.region === 0) {
       const rank = byHome.indexOf(p);
       n.owner = 0;
@@ -86,7 +88,7 @@ export function newGame(seed: number, threat = 0): Game {
       if (rank === 0) n.size = 0; if (rank === 1) n.size = 1;
       const near = dist(p, home) < 78 || rank <= 2;
       n.drones = near ? ri(g, 0, 2) + (n.kind === 'station' ? 3 : 0) : Math.round((th * 22 * rr(g, 0.6, 1.3) + (n.kind === 'station' ? 4 : 0)) * hard);
-      if (n.kind === 'planet') { n.offer = true; if (rank > 1 && rnd(g) < 0.3) n.event = nextEvent('planet'); }
+      if (n.kind === 'planet') { n.offer = true; if (rank > 1 && rnd(g) < 0.3) n.event = nextEvent('planet'); n.b.shield = CFG.neutralShieldGens[n.size]; }
       else { n.event = nextEvent('station'); if (rnd(g) < 0.5) n.b[pick(g, ['turret', 'barracks', 'shipyard', 'sensor', 'dock'])] = 1; }
     } else {
       const capital = capitals.includes(p);
@@ -94,11 +96,12 @@ export function newGame(seed: number, threat = 0): Game {
       n.kind = capital ? 'station' : rnd(g) < 0.55 ? 'planet' : 'station';
       n.drones = Math.round((capital ? 22 + th * 14 : 7 + th * 14 * rr(g, 0.7, 1.2)) * hard);
       if (p.region === 5) n.drones = Math.round(ri(g, 16, 24) * hard);
-      if (n.kind === 'planet') { n.b = { gen: 1, mine: ri(g, 1, 2) }; if (p.region === 5) n.b.shield = 1; }
-      else if (capital) n.b = { turret: 2, barracks: 1, dock: 1 };
-      else if (rnd(g) < 0.5) n.b = { turret: 1 };
+      if (n.kind === 'planet') { n.b = { gen: 1, mine: ri(g, 1, 2), shield: p.region === 5 ? 2 : 1 }; }
+      else if (capital) n.b = { turret: 2, sshield: 2, barracks: 1, dock: 1 };
+      else n.b = rnd(g) < 0.5 ? { turret: 1, sshield: 1 } : { sshield: 1 };
     }
-    if (n.kind === 'planet') n.nat = CFG.natBySize[n.size];
+    n.shields = Math.min(CFG.shieldCap, ((n.b.shield || 0) + (n.b.sshield || 0)) * CFG.shieldPerGen);
+    if (n.kind === 'station' && !n.home && !n.citadel) n.name = `${pick(g, STATION_NAMES)}-${ri(g, 2, 99)}`;
     g.nodes.push(n);
     g.intel.push({ seen: 0, t: 0, snap: null });
     g.vis.push(0);

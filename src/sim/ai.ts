@@ -6,7 +6,7 @@ import { sideMods, nodeMods, shipMods } from './mods';
 import { rnd, rr, ri } from './rng';
 import { dist, log, sideName, canBuild, startBuild, startShip, launch, calcBattle, eta, grantTech, shipSpeed, shipCost, newShip } from './core';
 
-const ARCHON_AI: FactionDef['ai'] = { aggr: 1, expand: 1e9, react: 0.9, target: 'weak', build: { turret: 3, screen: 2, barracks: 3, mine: 2, gen: 2, shield: 2, dock: 1 } };
+const ARCHON_AI: FactionDef['ai'] = { aggr: 1, expand: 1e9, react: 0.9, target: 'weak', build: { turret: 3, sshield: 2, barracks: 3, mine: 2, gen: 2, shield: 2, dock: 1 } };
 const aiOf = (g: Game, o: number) => (g.sides[o].kind === 'faction' ? FACTIONS[g.sides[o].fac].ai : ARCHON_AI);
 const idleShip = (g: Game, n: GNode): Ship | undefined => g.ships.find(s => s.owner === n.owner && s.at === n.id && s.loadUntil === 0);
 /** An idle ship at the node, or one requisitioned on the spot at full price from the side's treasury. */

@@ -1,11 +1,11 @@
 import type { Game, GNode, Ship, Spec, Mods } from '../sim/types';
 import { PLAYER } from '../sim/types';
-import { CFG, BUILD, STRUCT_DEF } from '../sim/config';
-import { SPECS, ARCHS, RELICS, TECHS, TECH_TIME, TECH_OPS, FACTIONS, ARCHONS, EVENTS, type AbilityDef } from '../sim/content';
-import { locMods, nodeMods, shipMods, sideMods, perkDef } from '../sim/mods';
+import { CFG, BUILD } from '../sim/config';
+import { SPECS, ARCHS, RELICS, TECHS, BRANCHES, FACTIONS, ARCHONS, EVENTS, type AbilityDef } from '../sim/content';
+import { locMods, nodeMods, shipMods, sideMods, perkDef, specLoc } from '../sim/mods';
 import {
-  calcBattle, viewOf, nodeOps, natMax, sideIncome, totalDrones, droneCap, canBuild, buildCount, buildMax, shipCost, isDocked, docks,
-  techAvailable, techCost, dist, sideName, sideColor, shipSeen, eta, slots, specName, rescueWindow, eventChoiceOk, aegis, shipById, corridorsAt, canCorridor, type Battle,
+  calcBattle, viewOf, nodeOps, shieldMax, sideIncome, totalDrones, droneCap, canBuild, buildCount, buildMax, shipCost, isDocked, docks,
+  techCost, techTime, techOps, techBlock, techLevel, corridorReach, musterPrice, turretKills, dist, sideName, sideColor, shipSeen, eta, slots, specName, rescueWindow, eventChoiceOk, aegis, shipById, corridorsAt, corridorMax, type Battle,
 } from '../sim/core';
 import { abilitiesOf, cdLeft, abilityCheck } from '../sim/abilities';
 import { known } from './render';
@@ -13,7 +13,7 @@ import { known } from './render';
 export interface App {
   g: Game | null; speed: number; paused: boolean;
   sel: { type: 'node' | 'ship'; id: number } | null; tab: string; menu: string | null;
-  mode: null | { k: 'launch'; ship: number } | { k: 'ability'; spec: number; id: string } | { k: 'redirect'; ship: number } | { k: 'corridor'; from: number };
+  mode: null | { k: 'launch'; ship: number } | { k: 'ability'; spec: number; id: string } | { k: 'redirect'; ship: number } | { k: 'corridor'; from: number } | { k: 'route'; from: number };
   launch: null | { ship: number; to: number; drones: number; specs: number[]; from?: number; lane?: boolean };
   screen: 'title' | 'game' | 'help'; newThreat: number; meta: { runs: number; wins: number; unlocked: number; best: number };
   hasSave: boolean; note: string; noteT: number;
@@ -41,7 +41,7 @@ export function hud(app: App): string {
     const left = rescueWindow(g) - (g.t - g.cmdLostT);
     banner = `<div class="banner bad" data-a="focus:${cmd.node}">★ COMMANDER CAPTURED at ${esc(g.nodes[cmd.node].name)}. Retake it in <b>${fmtT(left)}</b></div>`;
   } else if (app.mode) {
-    const t = app.mode.k === 'launch' ? 'Tap a destination' : app.mode.k === 'redirect' ? 'Tap a new destination' : 'Tap a target';
+    const t = { launch: 'Tap a destination', redirect: 'Tap a new destination', ability: 'Tap a target', corridor: 'Tap a glowing node to link a corridor', route: 'Tap a glowing node to send through corridors' }[app.mode.k];
     banner = `<div class="banner">${t} <button class="btn sm" data-a="cancelmode">Cancel</button></div>`;
   } else if (g.offs.length) {
     const o = g.offs[0];
@@ -56,6 +56,7 @@ export function hud(app: App): string {
     <div class="stat time"><b>${fmtT(g.t)}</b></div>
     <button class="btn ico ${app.paused ? 'hot' : ''}" data-a="pause" title="Pause (space)">${app.paused ? '▶' : '❚❚'}</button>
     <button class="btn ico" data-a="speed" title="Speed">${app.speed}×</button>
+    <button class="btn ico desk" data-a="console" title="Tuning console (\`)">⚙</button>
     <button class="btn ico" data-a="menu:specs" title="Menu (M)">☰</button>
   </div>${banner}`;
 }
@@ -65,38 +66,6 @@ function abilityBtn(g: Game, sp: Spec, a: AbilityDef) {
   const cd = cdLeft(g, sp, a.id);
   const where = a.at === 'ship' ? 'in flight' : a.at === 'planet' ? 'on a planet' : a.at === 'node' ? 'at a node' : '';
   return `<button class="abil" data-a="ability:${sp.id}:${a.id}" ${cd > 0 ? 'disabled' : ''}><b>${a.name}</b>${cd > 0 ? `<em>${fmtT(cd)}</em>` : `<em>ready</em>`}<span>${a.desc}${where ? ` <i>Use ${where}.</i>` : ''}</span></button>`;
-}
-/** Big ability buttons for every specialist present: the first thing shown when a node or ship is selected. */
-export function abilityDeck(g: Game, ids: number[]): string {
-  const cards: string[] = [], later: string[] = [];
-  for (const id of ids) {
-    const sp = g.specs[id];
-    if (!sp || sp.owner !== PLAYER || sp.held) continue;
-    for (const a of abilitiesOf(sp)) {
-      const cd = cdLeft(g, sp, a.id), why = cd > 0 ? null : abilityCheck(g, sp, { ...a, target: 'self' }, null);
-      const total = a.cd || 1, frac = cd > 0 ? 1 - cd / total : 1;
-      const state = cd > 0 ? fmtT(cd) : a.target === 'self' ? 'Ready' : 'Ready · tap, then pick a target';
-      // abilities that cannot be used where the specialist stands drop to a small line below
-      if (why && cd <= 0) { later.push(`<span class="later" data-tip="${sp.id}">${token(g, sp)} ${a.name} <small>${esc(why)}</small></span>`); continue; }
-      cards.push(`<button class="deck ${cd > 0 || why ? 'off' : 'on'}" data-a="ability:${sp.id}:${a.id}" ${cd > 0 || why ? 'disabled' : ''} style="--p:${(frac * 100).toFixed(0)}%">
-        ${token(g, sp)}<span><b>${a.name}</b><small>${esc(sp.cmd ? 'Commander' : SPECS[sp.def].name)} · ${esc(state)}</small><i>${a.desc}</i></span></button>`);
-    }
-  }
-  return (cards.length ? `<div class="deckrow">${cards.join('')}</div>` : '') + (later.length ? `<div class="laterrow">${later.join('')}</div>` : '');
-}
-/** Slots at a node and on each ship parked there, with one-tap moves between them. */
-function teamStrip(g: Game, n: GNode, ships: Ship[]): string {
-  const cap = slots(g, PLAYER);
-  const tile = (id: number, move: string) => { const sp = g.specs[id]; return `<div class="slot full" data-tip="${id}">${token(g, sp, true)}<small>${esc(sp.cmd ? 'Commander' : SPECS[sp.def].name)}</small>${move}</div>`; };
-  const empty = '<div class="slot"><small>empty</small></div>';
-  const usable = ships.filter(s => s.loadUntil === 0);
-  const nodeTiles = n.specs.map(id => tile(id, usable.length ? `<button class="mv" data-a="swap:${id}:${usable.find(s => s.specs.length < cap)?.id ?? usable[0].id}" title="Move aboard">▲</button>` : '')).concat(Array(Math.max(0, cap - n.specs.length)).fill(empty));
-  let out = `<div class="team"><h3>At ${esc(n.name)} <small>${n.specs.length}/${cap}</small></h3><div class="slots">${nodeTiles.join('')}</div>`;
-  usable.forEach((s, i) => {
-    const tiles = s.specs.map(id => tile(id, `<button class="mv" data-a="swap:${id}:${s.id}" title="Move to the node">▼</button>`)).concat(Array(Math.max(0, cap - s.specs.length)).fill(empty));
-    out += `<h3>Ship ${usable.length > 1 ? i + 1 : ''} <small>${isDocked(g, s) ? 'docked' : 'orbiting'} · ${s.specs.length}/${cap}</small></h3><div class="slots">${tiles.join('')}</div>`;
-  });
-  return out + (usable.length ? '<p class="dim">Tap ▲ or ▼ to move a specialist between this node and a ship here. Hold a statue on the map for details.</p>' : '') + '</div>';
 }
 /** Compact tooltip for a specialist (long-press or hover on the map). */
 export function specTip(g: Game, sp: Spec): string {
@@ -124,63 +93,94 @@ export function specRow(g: Game, sp: Spec, withLoc = false, withAbilities = true
 }
 
 // ------------------------------------------------------------------ node panel
-function defenceLine(g: Game, n: GNode, v: GNode) {
-  const r = calcBattle(g, 0, {}, v, nodeMods(g, v));
-  const p = r.parts, bits = [`${p.garr} Drones`];
-  if (v.kind === 'planet') bits.push(`${p.nat} natural`);
-  if (p.struct) bits.push(`${p.struct} structures`);
-  if (p.bonus) bits.push(`${p.bonus > 0 ? '+' : ''}${p.bonus} bonuses`);
-  if (p.aegis) bits.push(`${p.aegis} Aegis`);
-  void n;
-  return { total: r.def, text: bits.join(' + ') };
+const pct = (v: number) => `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`;
+const MOD_LABEL: Record<string, (v: number) => string> = {
+  build: v => `Build ${pct(v)}`, mine: v => `Mines ${pct(v)}`, research: v => `Research ${pct(v)}`, prod: v => `Drones ${pct(v)}`,
+  batch: v => `Batch +${v}`, fov: v => `Vision ${pct(v)}`, def: v => `Shield +${v}`, shieldMax: v => `Shield +${v}`, natRegen: v => `Recharge ${pct(v)}`,
+  speed: v => `Speed ${pct(v)}`, atk: v => `Attack +${v}`, atkPct: v => `Attack ${pct(v)}`, atkPer8: () => 'Attack +1 per 8', vsNeutral: v => `Neutrals −${v}`,
+  ignStruct: () => 'Slips past turrets', ignNat: () => 'Ignores shields', structHalf: v => `Turret losses −${Math.round(v * 100)}%`, structDef: v => `Turrets ${pct(v)}`,
+  stealth: () => 'Unseen', surv: v => `Survivors ${pct(v)}`, redirect: () => 'Can redirect', salvage: () => 'Salvage', noLoad: () => 'No loading',
+  launchSpeed: v => `Launch speed ${pct(v)}`, preKill: v => `Lances ${Math.round(v * 100)}%`, martyr: () => 'Martyr', mineSlots: v => `Mine slots +${v}`, cap: v => `Capacity +${v}`,
+  corridor: v => `Corridors ${pct(v)}`, medic: () => 'Escape once', sigint: () => 'Reads fleets', droneCap: v => `Cap +${v}`, shipCost: v => `Ships −${Math.round(v * 100)}%`,
+  ransom: () => 'Ransom ×2', prisonInc: v => `Prisoners +${v}/min`, warn: () => 'Warns of attacks', remember: () => 'Long memory',
+};
+function modText(m: Mods): string[] { return Object.keys(m).filter(k => m[k] && MOD_LABEL[k]).map(k => MOD_LABEL[k](m[k])); }
+/** One compact row: each specialist here and what it is doing for this node right now. */
+function passiveRow(g: Game, ids: number[]): string {
+  if (!ids.length) return '';
+  const chips = ids.map(id => {
+    const sp = g.specs[id], loc = modText(specLoc(g, sp)), glob = modText(SPECS[sp.def].glob || {});
+    const txt = (loc.length ? loc : glob.length ? glob : [sp.def === 'echo' ? 'Echoes a neighbour' : SPECS[sp.def].role]).slice(0, 2).join(' · ');
+    return `<span class="pchip" data-tip="${id}">${token(g, sp)}<span>${esc(txt)}</span></span>`;
+  }).join('');
+  return `<div class="prow">${chips}</div>`;
 }
-function structs(v: GNode) {
-  const list = Object.keys(v.b).filter(k => v.b[k] > 0).map(k => `${BUILD[k].name}${v.b[k] > 1 ? ` ×${v.b[k]}` : ''}`);
-  return list.length ? list.join(', ') : 'None';
+/** Compact list of active abilities: one line each, with a Use button. */
+export function abilityList(g: Game, ids: number[]): { html: string; ready: number } {
+  let ready = 0;
+  const rows = ids.flatMap(id => {
+    const sp = g.specs[id];
+    if (!sp || sp.owner !== PLAYER || sp.held) return [];
+    return abilitiesOf(sp).map(a => {
+      const cd = cdLeft(g, sp, a.id), why = cd > 0 ? null : abilityCheck(g, sp, { ...a, target: 'self' }, null), ok = cd <= 0 && !why;
+      if (ok) ready++;
+      const state = cd > 0 ? fmtT(cd) : why ? why : a.target === 'self' ? 'Ready' : 'Ready · then tap a target';
+      return `<div class="arow ${ok ? 'on' : ''}" data-tip="${sp.id}">${token(g, sp)}<span><b>${a.name}</b><small>${esc(state)} · ${a.desc}</small></span>${ok ? `<button class="btn sm hot" data-a="ability:${sp.id}:${a.id}">Use</button>` : ''}</div>`;
+    });
+  });
+  return { html: rows.join(''), ready };
+}
+function shieldLine(g: Game, v: GNode) {
+  const r = calcBattle(g, 0, {}, v, g.sides[v.owner] ? nodeMods(g, v) : {});
+  return { def: r.def, shield: r.parts.shield + r.parts.aegis, max: shieldMax(g, v) + r.parts.aegis, turrets: turretKills(v, {}, g.sides[v.owner] ? nodeMods(g, v) : {}) };
+}
+function kvDef(g: Game, v: GNode, third: string) {
+  const d = shieldLine(g, v);
+  return `<div class="kv"><div><small>GARRISON</small><b>⬢ ${v.drones}</b></div><div><small>SHIELD</small><b>◈ ${Math.floor(d.shield)}<i class="of">/${d.max}</i></b>${d.turrets ? `<small>turrets kill ${d.turrets}</small>` : ''}</div>${third}</div>`;
+}
+/** One horizontally scrolling row of ship icons; tap one to send it. */
+function shipRow(g: Game, ships: Ship[]): string {
+  if (!ships.length) return '<p class="dim">No ship here.</p>';
+  return `<div class="srow">${ships.map(s => {
+    const st = s.loadUntil > 0 ? 'loading' : isDocked(g, s) ? '' : 'orbit';
+    const crew = s.specs.map(i => token(g, g.specs[i])).join('');
+    return `<button class="shipic ${st}" data-a="${s.loadUntil > 0 ? 'noop' : `send:${s.id}`}"><span class="hull">▲${s.drones ? `<i>${s.drones}</i>` : ''}</span><span class="crew">${crew}</span>${st ? `<small>${st}</small>` : ''}</button>`;
+  }).join('')}</div>`;
 }
 
 function ownNode(app: App, n: GNode): string {
   const g = app.g!, tm = nodeMods(g, n), ops = nodeOps(g, n, tm), side = g.sides[PLAYER];
   const hasLab = (n.b.lab || 0) + (n.b.slab || 0) > 0;
-  const tabs = ['info', 'build'].concat(hasLab ? ['research'] : []);
+  const ships = g.ships.filter(s => s.at === n.id && s.owner === PLAYER);
+  const here = n.specs.concat(ships.flatMap(s => s.specs));
+  const abil = abilityList(g, here);
+  const tabs = ['info'].concat(here.length || n.prisoners.length ? ['specs'] : [], ['build'], hasLab ? ['research'] : []);
   if (!tabs.includes(app.tab)) app.tab = 'info';
   let body = '';
   if (app.tab === 'info') {
-    const parkedShips = g.ships.filter(s => s.at === n.id && s.owner === PLAYER);
-    body += abilityDeck(g, n.specs.concat(parkedShips.flatMap(s => s.specs)));
-    const d = defenceLine(g, n, n);
-    body += `<div class="kv"><div><small>GARRISON</small><b>⬢ ${n.drones}</b></div><div><small>DEFENCE</small><b>${d.total}</b></div>${n.kind === 'planet' ? `<div><small>OUTPUT</small><b>◆ ${ops.out.toFixed(1)}</b><small>of ${ops.cap.toFixed(0)}/min</small></div>` : `<div><small>DOCKS</small><b>${docks(n)}</b></div>`}</div>`;
-    body += `<p class="dim">${d.text}${n.kind === 'planet' ? ` · natural defence ${Math.floor(n.nat)}/${natMax(g, n, tm)}` : ''}</p>`;
-    if (n.kind === 'planet') body += `<p class="dim">Mines ${ops.on}/${n.b.mine || 0} running · ${n.b.gen || 0} generator${(n.b.gen || 0) === 1 ? '' : 's'} power ${(n.b.gen || 0) * CFG.minesPerGen}</p>`;
+    body += kvDef(g, n, n.kind === 'planet' ? `<div><small>OUTPUT</small><b>◆ ${ops.out.toFixed(1)}</b><small>of ${ops.cap.toFixed(0)}/min</small></div>` : `<div><small>DOCKS</small><b>${docks(n)}</b></div>`);
+    if (n.kind === 'planet' && (n.b.mine || 0)) body += `<p class="dim">Mines ${ops.on}/${n.b.mine || 0} running</p>`;
     if (ops.short > 0) body += `<p class="warnp">${ops.short} Drone${ops.short > 1 ? 's' : ''} short: ${ops.resNeed && !ops.resOn ? 'research paused' : 'some mines idle'}.</p>`;
     if (n.lane) {
       const tn = (t: { kind: string; id: string }) => (t.kind === 'ship' ? 'Ship' : t.kind === 'corridor' ? `Corridor to ${g.nodes[+t.id].name}` : BUILD[t.id].name);
-      const t = n.lane, nm = tn(t);
-      body += `<div class="task"><div><b>${nm}</b><small>${fmtT(t.left)} left${n.kind === 'station' ? ' · Drone production paused' : ''}</small>${bar(1 - t.left / t.total, 'gold')}</div><button class="btn sm" data-a="cancel:-1">✕</button></div>`;
+      const t = n.lane;
+      body += `<div class="task"><div><b>${esc(tn(t))}</b><small>${fmtT(t.left)} left${n.kind === 'station' ? ' · Drone production paused' : ''}</small>${bar(1 - t.left / t.total, 'gold')}</div><button class="btn sm" data-a="cancel:-1">✕</button></div>`;
       n.queue.forEach((q, i) => (body += `<div class="task q"><div><b>${esc(tn(q))}</b><small>queued</small></div><button class="btn sm" data-a="cancel:${i}">✕</button></div>`));
     } else if (n.kind === 'station') {
       const capped = totalDrones(g, PLAYER) >= droneCap(g, PLAYER);
-      body += `<div class="task"><div><b>Producing Drones</b><small>${capped ? 'Global Drone cap reached' : `+${CFG.batch + (tm.batch || 0)} per batch`}</small>${bar(n.prod / CFG.batchTime)}</div></div>`;
+      body += `<div class="task"><div><b>Producing Drones</b><small>${capped ? 'Drone cap reached' : `+${CFG.batch + (tm.batch || 0)} per batch`}</small>${bar(n.prod / CFG.batchTime)}</div></div>`;
     }
-    if (n.research) body += `<div class="task"><div><b>Research: ${TECHS[n.research].name}</b><small>${ops.resOn ? `${fmtT(TECH_TIME[TECHS[n.research].tier] - (side.techProg[n.research] || 0))} of lab time left` : 'paused: not enough Drones'}</small>${bar((side.techProg[n.research] || 0) / TECH_TIME[TECHS[n.research].tier], 'blue')}</div></div>`;
+    if (n.research) body += `<div class="task"><div><b>Research: ${TECHS[n.research].name}</b><small>${ops.resOn ? `${fmtT(techTime(n.research) - (side.techProg[n.research] || 0))} left` : 'paused: not enough Drones'}</small>${bar((side.techProg[n.research] || 0) / techTime(n.research), 'blue')}</div></div>`;
     if (n.hold) body += `<div class="task"><div><b>${esc(n.hold.name)}</b><small>Hold with ${n.hold.need}+ Drones · ${fmtT(n.hold.until - g.t)} left</small>${bar(1 - (n.hold.until - g.t) / n.hold.total, 'blue')}</div></div>`;
     if (n.event) body += btn('event', `! ${EVENTS[n.event].name}`, { cls: 'wide gold', sub: 'Investigate' });
-
-    const ships = g.ships.filter(s => s.at === n.id && s.owner === PLAYER);
-    body += `<h3>Ships</h3>`;
-    if (!ships.length) body += `<p class="dim">No ship here. Drones and specialists only move by ship.</p>`;
-    for (const s of ships) {
-      const st = s.loadUntil > 0 ? `Loading for ${esc(g.nodes[s.to].name)}` : isDocked(g, s) ? 'Docked' : `Orbiting, no free dock${s.drones ? ` · ${s.drones} Drones aboard` : ''}`;
-      body += `<div class="task"><div><b>▲ Ship</b><small>${st}</small></div>${s.loadUntil > 0 ? '' : btn(`send:${s.id}`, 'Send', { cls: 'sm hot' })}</div>`;
-    }
-    body += teamStrip(g, n, ships);
-    const cors = corridorsAt(g, n.id);
-    if (cors.length) {
-      body += `<h3>Corridors</h3>`;
-      for (const c of cors) { const o = g.nodes[c.a === n.id ? c.b : c.a]; body += `<div class="task"><div><b>⇄ ${esc(o.name)}</b><small>${c.until ? `temporary · ${fmtT(c.until - g.t)} left` : 'Drones and specialists cross at double speed, no ship needed'}</small></div>${btn(`lane:${o.id}`, 'Send', { cls: 'sm hot' })}</div>`; }
-    }
-    const here = n.specs.concat(ships.flatMap(s => s.specs));
-    if (here.length) body += `<h3>Specialist details</h3>` + here.map(i => specRow(g, g.specs[i], false, false)).join('');
+    body += `<h3>Ships</h3>${shipRow(g, ships)}`;
+    const acts: string[] = [];
+    if (corridorReach(g, n.id).length) acts.push(btn('route', '⇄ Send via corridors', { cls: 'hot' }));
+    if (n.kind === 'station') { const room = Math.min(CFG.musterSize, droneCap(g, PLAYER) - totalDrones(g, PLAYER)), price = room * musterPrice(g); acts.push(btn('muster', `⬢ Muster +${Math.max(0, room)}`, { sub: `◆ ${price}`, off: room <= 0 ? 'Drone cap reached' : side.ult < price ? 'Not enough Ultanium' : null })); }
+    if (acts.length) body += `<div class="row">${acts.join('')}</div>`;
+  } else if (app.tab === 'specs') {
+    if (abil.html) body += `<h3>Abilities</h3>${abil.html}`;
+    if (here.length) body += `<h3>Specialists <small>${n.specs.length}/${slots(g, PLAYER)} here${ships.some(s => s.specs.length) ? ' · others aboard ships' : ''}</small></h3>` + here.map(i => specRow(g, g.specs[i], false, false)).join('');
     if (n.prisoners.length) {
       const sm = sideMods(g, PLAYER);
       body += `<h3>Prisoners</h3>`;
@@ -191,8 +191,8 @@ function ownNode(app: App, n: GNode): string {
       }
     }
   } else if (app.tab === 'build') {
-    const corrN = corridorsAt(g, n.id).filter(c => !c.until).length;
-    body += btn('corridorpick', `⇄ Corridor <i class="cnt">${corrN}/${CFG.corridorMax}</i>`, { cls: 'wide', sub: `◆ ${CFG.corridorCost} · ${CFG.corridorTime}s · link to one of your nodes within ${CFG.corridorRange}; Drones and specialists cross at double speed without a ship`, off: corrN >= CFG.corridorMax ? 'Maximum built' : side.ult < CFG.corridorCost ? 'Not enough Ultanium' : null });
+    const corrN = corridorsAt(g, n.id).filter(c => !c.until).length, cmx = corridorMax(g);
+    body += btn('corridorpick', `⇄ Corridor <i class="cnt">${corrN}/${cmx}</i>`, { cls: 'wide', sub: `◆ ${CFG.corridorCost} · ${CFG.corridorTime}s · then tap a glowing node to link it`, off: corrN >= cmx ? 'Maximum built' : side.ult < CFG.corridorCost ? 'Not enough Ultanium' : null });
     if (n.kind === 'station') body += btn('ship', '▲ Ship', { cls: 'wide', sub: `◆ ${shipCost(g, PLAYER)} · ${CFG.shipTime}s · pauses Drone production`, off: side.ult < shipCost(g, PLAYER) ? 'Not enough Ultanium' : n.queue.length >= 4 ? 'Queue full' : null });
     for (const id in BUILD) {
       const d = BUILD[id];
@@ -203,19 +203,37 @@ function ownNode(app: App, n: GNode): string {
   } else {
     body += `<label class="chk"><input type="checkbox" data-a="resfirst" ${n.resFirst ? 'checked' : ''}> If Drones run short, keep research running before mines</label>`;
     if (n.research) body += btn('research:', `Stop ${TECHS[n.research].name}`, { cls: 'wide', sub: 'Progress is kept' });
-    const av = techAvailable(g, PLAYER);
-    let last = '';
-    for (const id in TECHS) {
-      const t = TECHS[id];
-      if (t.branch !== last) { body += `<h3>${t.branch}</h3>`; last = t.branch; }
-      const have = side.techs.includes(id), prog = side.techProg[id];
-      if (have) { body += `<div class="tech done"><b>✓ ${t.name}</b><small>${t.desc}</small></div>`; continue; }
-      const elsewhere = g.nodes.some(o => o.owner === PLAYER && o.id !== n.id && o.research === id);
-      const off = !av.includes(id) ? `Needs ${TECHS[t.pre!].name}` : elsewhere ? 'In progress elsewhere' : n.research === id ? 'Running here' : prog === undefined && side.ult < techCost(g, PLAYER, id) ? 'Not enough Ultanium' : null;
-      body += btn(`research:${id}`, t.name, { cls: 'wide', sub: `${prog === undefined ? `◆ ${techCost(g, PLAYER, id)}` : `${Math.round((prog / TECH_TIME[t.tier]) * 100)}% done`} · ${TECH_TIME[t.tier]}s · ${TECH_OPS[t.tier]} Drones · ${t.desc}`, off });
+    body += researchList(g, n);
+  }
+  const tabName = (t: string) => (t === 'info' ? 'Overview' : t === 'specs' ? `Specialists${abil.ready ? ` <i class="badge">${abil.ready}</i>` : ''}` : t === 'build' ? 'Build' : 'Research');
+  return `${passiveRow(g, n.specs)}<div class="tabs">${tabs.map(t => `<button data-a="tab:${t}" class="${app.tab === t ? 'on' : ''}">${tabName(t)}</button>`).join('')}</div><div class="pbody">${body}</div>`;
+}
+
+/** Research grouped by branch; doctrine pairs side by side; repeatables show their level. */
+function researchList(g: Game, n: GNode | null): string {
+  const side = g.sides[PLAYER];
+  let out = '';
+  for (const br of BRANCHES) {
+    out += `<h3>${br}</h3>`;
+    const list = Object.values(TECHS).filter(t => t.branch === br).sort((a, b) => a.tier - b.tier);
+    const seen = new Set<string>();
+    for (const t of list) {
+      if (seen.has(t.id)) continue;
+      const pair = t.excl ? [t, TECHS[t.excl]] : [t];
+      pair.forEach(x => seen.add(x.id));
+      const cells = pair.map(x => {
+        const have = !x.rep && side.techs.includes(x.id), lv = techLevel(g, PLAYER, x.id), prog = side.techProg[x.id];
+        const block = techBlock(g, PLAYER, x.id), elsewhere = g.nodes.some(o => o.owner === PLAYER && o.id !== n?.id && o.research === x.id);
+        const title = `${x.name}${x.rep ? ` <i class="cnt">L${lv}/${x.rep}</i>` : ''}`;
+        if (have) return `<div class="tech done"><b>✓ ${x.name}</b><small>${x.desc}</small></div>`;
+        if (!n) return `<div class="tech ${block && block.startsWith('Locked') ? 'locked' : ''}"><b>${title}</b><small>${x.desc}${prog !== undefined ? ` · ${Math.round((prog / techTime(x.id)) * 100)}%` : ''}${block ? ` · ${esc(block)}` : ''}</small></div>`;
+        const off = block || (elsewhere ? 'In progress elsewhere' : n.research === x.id ? 'Running here' : prog === undefined && side.ult < techCost(g, PLAYER, x.id) ? 'Not enough Ultanium' : null);
+        return btn(`research:${x.id}`, title, { cls: `wide ${block && block.startsWith('Locked') ? 'locked' : ''}`, sub: `${prog === undefined ? `◆ ${techCost(g, PLAYER, x.id)}` : `${Math.round((prog / techTime(x.id)) * 100)}% done`} · ${techTime(x.id)}s · ${techOps(x.id)} Drones · ${x.desc}`, off });
+      });
+      out += pair.length > 1 ? `<div class="doctrine"><small>DOCTRINE · choose one</small><div>${cells.join('')}</div></div>` : cells[0];
     }
   }
-  return `<div class="tabs">${tabs.map(t => `<button data-a="tab:${t}" class="${app.tab === t ? 'on' : ''}">${t === 'info' ? 'Overview' : t === 'build' ? 'Build' : 'Research'}</button>`).join('')}</div><div class="pbody">${body}</div>`;
+  return out;
 }
 
 function foreignNode(app: App, n: GNode): string {
@@ -223,10 +241,10 @@ function foreignNode(app: App, n: GNode): string {
   let body = '';
   if (k.tier === 'detected' || !view.v) body += `<p class="warnp">Detected only. Forces, structures and residents are unknown. Scout it with an unmanned ship (the ship is lost) or bring it inside full-intelligence range.</p>`;
   else {
-    const v = view.v, d = defenceLine(g, n, v);
-    body += `<p class="${view.live ? 'goodp' : 'warnp'}">${view.live ? 'Full intelligence' : `Last seen ${fmtT(view.age)} ago. This may be out of date.`}</p>`;
-    body += `<div class="kv"><div><small>GARRISON</small><b>⬢ ${v.drones}</b></div><div><small>DEFENCE</small><b>${d.total}</b></div><div><small>TO WIN</small><b>${d.total + 1}+</b></div></div><p class="dim">${d.text}</p><p class="dim">Structures: ${structs(v)}</p>`;
-    if (v.specs.length) body += `<h3>Specialists</h3>` + v.specs.map(i => specRow(g, g.specs[i])).join('');
+    const v = view.v, d = shieldLine(g, v);
+    if (!view.live) body += `<p class="warnp">Last seen ${fmtT(view.age)} ago. This may be out of date.</p>`;
+    body += kvDef(g, v, `<div><small>TO WIN</small><b>${d.def + 1}+</b>${d.turrets ? `<small>plus ${d.turrets} lost to turrets</small>` : ''}</div>`);
+    if (v.specs.length) body += passiveRow(g, v.specs);
     if (v.prisoners.some(i => g.specs[i].owner === PLAYER)) body += `<p class="warnp">Holding your people: ${v.prisoners.filter(i => g.specs[i].owner === PLAYER).map(i => esc(specName(g.specs[i]))).join(', ')}</p>`;
     if (n.offer) body += `<p class="goodp">☺ Residents: capture this planet to recruit 1 of 3 specialists.</p>`;
     if (n.event) body += `<p class="goodp">! Signal: ${EVENTS[n.event].name}. Capture the node to investigate.</p>`;
@@ -276,9 +294,10 @@ export function launchPreview(g: Game, L: NonNullable<App['launch']>): string {
   if (!view.v) return out + `<p class="badp"><b>Unknown forces. Battle outcome unavailable.</b></p>`;
   const r: Battle = calcBattle(g, L.drones, m, view.v, nodeMods(g, view.v)), p = r.parts;
   const atk = [`${p.drones} Drones`].concat(p.pct ? [`+${p.pct} training`] : [], p.flat ? [`+${p.flat} specialists`] : []).join(' ');
-  const def = [`${p.garr} Drones`].concat(p.nat ? [`${p.nat} natural`] : [], p.struct ? [`${p.struct} structures`] : [], p.bonus ? [`${p.bonus > 0 ? '+' : ''}${p.bonus} bonuses`] : [], p.aegis ? [`${p.aegis} Aegis`] : []).join(' + ');
+  const def = [`${p.garr} Drones`].concat(p.shield ? [`${p.shield} shield`] : [], p.aegis ? [`${p.aegis} Aegis`] : [], p.bonus ? [`${p.bonus} Diplomat`] : []).join(' + ');
   out += `<div class="versus"><div><small>ATTACK</small><b>${r.atk}</b><span>${atk}</span></div><i>vs</i><div><small>DEFENCE</small><b>${r.def}</b><span>${def}</span></div></div>`;
-  if (r.preKilled) out += `<p class="warnp">${r.preKilled} Drones are destroyed before landing.</p>`;
+  if (p.turret) out += `<p class="warnp">Turrets shoot down ${p.turret} Drones before landing.</p>`;
+  if (p.lance) out += `<p class="warnp">Lances destroy ${p.lance} more before landing.</p>`;
   out += r.win ? `<p class="goodp"><b>Victory expected.</b> ${r.surv} Drones survive to hold the node.</p>`
     : `<p class="badp"><b>Defeat expected.</b> Short by ${r.def - r.atk + 1}. ${to.owner === 0 ? 'All Drones are lost; the ship and specialists return.' : 'The ship is destroyed and specialists aboard are captured.'}</p>`;
   if (!view.live) out += `<p class="warnp">Based on intelligence ${fmtT(view.age)} old. The enemy may have changed.</p>`;
@@ -319,7 +338,7 @@ function launchSheet(app: App): string {
 function shipPanel(app: App, s: Ship): string {
   const g = app.g!, seen = shipSeen(g, s), to = g.nodes[s.to];
   let body = `<div class="kv"><div><small>DRONES</small><b>⬢ ${seen === 2 ? s.drones : '?'}</b></div><div><small>ARRIVES IN</small><b>${fmtT(eta(g, s, to))}</b></div><div><small>HEADING</small><b data-a="focus:${to.id}" class="link">${esc(to.name)}</b></div></div>`;
-  if (s.owner === PLAYER) body = abilityDeck(g, s.specs) + body;
+  if (s.owner === PLAYER) body = abilityList(g, s.specs).html + body;
   if (s.owner === PLAYER) {
     if (shipMods(g, s).redirect && !s.redirected) body += btn(`redirect:${s.id}`, 'Redirect', { cls: 'wide', sub: 'Once per flight' });
     if (s.specs.length) body += `<h3>Aboard</h3>` + s.specs.map(i => specRow(g, g.specs[i], false, false)).join('');
@@ -352,8 +371,7 @@ export function menu(app: App): string {
   } else if (app.menu === 'research') {
     const labs = g.nodes.filter(n => n.owner === PLAYER && (n.b.lab || n.b.slab));
     body = `<p class="dim">${labs.length ? 'Labs: ' + labs.map(n => `<span class="link" data-a="focus:${n.id}">${esc(n.name)}${n.research ? ` (${TECHS[n.research].name})` : ' (idle)'}</span>`).join(', ') : 'Build a Research Lab on a planet or station to begin.'}</p>`;
-    let last = '';
-    for (const id in TECHS) { const t = TECHS[id]; if (t.branch !== last) { body += `<h3>${t.branch}</h3>`; last = t.branch; } const have = side.techs.includes(id), p = side.techProg[id]; body += `<div class="tech ${have ? 'done' : ''}"><b>${have ? '✓ ' : ''}${t.name}</b><small>${t.desc}${p !== undefined ? ` · ${Math.round((p / TECH_TIME[t.tier]) * 100)}%` : ''}</small></div>`; }
+    body += researchList(g, null);
   } else if (app.menu === 'intel') {
     const a = ARCHONS[g.sides[g.archon].fac], m = g.mob;
     body = `<div class="fac" style="--c:#e07aa0"><b>✦ ${a.name} ${a.title}</b><p>${a.desc}</p><p>Mobilization stage ${m.stage}/5${m.surge ? ` · total war +${m.surge}` : ''} (${Math.round(m.prog * 100)}% to the next). Each stage enlarges Coalition reserves and offensives and gives every faction new technology. Capturing enemy nodes sets it back; a captured Warlord removes a whole stage.</p><p>Citadel Aegis: ${aegis(g, g.nodes[g.citadel])} (${g.factions.filter(o => !g.sides[o].broken).length} layers).</p></div>`;
@@ -402,6 +420,17 @@ export function modal(app: App): string {
     cards = p.opts.map((id: string, i: number) => { const r = RELICS[id]; return `<button class="card relic ${r.rarity}" data-a="choose:${i}"><h3>${r.name}</h3><small>${r.rarity}</small><p>${r.desc}</p></button>`; }).join('');
     return `<div class="modal"><h2>Choose a relic</h2><p class="dim">Relics last for the whole run.</p><div class="cards">${cards}</div></div>`;
   }
+  if (p.kind === 'crew') {
+    const s = shipById(g, p.opts[0]), n = g.nodes[p.node];
+    if (!s || s.at !== n.id) return `<div class="modal"><h2>${esc(p.title)}</h2>${btn('choose:0', 'Done', { cls: 'wide hot' })}</div>`;
+    const cap = slots(g, PLAYER);
+    const tile = (id: number) => `<button class="slot full" data-a="swap:${id}:${s.id}">${token(g, g.specs[id], true)}<small>${esc(specName(g.specs[id]))}</small></button>`;
+    const pad = (k: number) => Array(Math.max(0, cap - k)).fill('<div class="slot"><small>empty</small></div>').join('');
+    return `<div class="modal"><h2>${esc(n.name)} is full</h2><p class="dim">A node holds ${cap} specialists. Tap one to move it between ${esc(n.name)} and the ship. Whoever stays aboard can fly on with the ship later.</p>
+      <h3>At ${esc(n.name)}</h3><div class="slots">${n.specs.map(tile).join('')}${pad(n.specs.length)}</div>
+      <h3>Aboard the ship</h3><div class="slots">${s.specs.map(tile).join('')}${pad(s.specs.length)}</div>
+      ${btn('choose:0', 'Done', { cls: 'wide hot' })}</div>`;
+  }
   if (p.kind === 'perk') {
     cards = p.opts.map((id: string, i: number) => { const r = perkDef(id); return `<button class="card" data-a="choose:${i}"><h3>${r.name}</h3><p>${r.desc}</p></button>`; }).join('');
     return `<div class="modal"><h2>${esc(p.title)}</h2>${g.specs[g.cmdSpec].cmd!.lvl === 3 ? `<p class="goodp">New ability unlocked: ${ARCHS[g.specs[g.cmdSpec].cmd!.arch].b.name}</p>` : ''}<div class="cards">${cards}</div></div>`;
@@ -441,4 +470,3 @@ export function help(): string {
   <p><b>Controls.</b> Drag, or use the arrow keys or WASD, to scroll the map. Pinch or scroll to zoom. Space pauses, 1/2/3 set speed, M opens the menu, H returns home, Esc cancels.</p>
   ${btn('helpclose', 'Got it', { cls: 'wide hot' })}</div>`;
 }
-void STRUCT_DEF;

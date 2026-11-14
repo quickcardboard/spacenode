@@ -3,7 +3,7 @@ import { PLAYER } from './types';
 import { SPECS, ARCHS, TECHS, type AbilityDef } from './content';
 import { BUILD, CFG } from './config';
 import { sideMods } from './mods';
-import { dist, shipById, homeOf, toNode, log, updateVision, startBuild, natMax, totalDrones, droneCap, capture, calcBattle, convert, BIG, slots, corridorBetween } from './core';
+import { dist, shipById, homeOf, toNode, log, updateVision, startBuild, shieldMax, totalDrones, droneCap, capture, calcBattle, convert, BIG, slots, corridorBetween } from './core';
 
 export function abilitiesOf(sp: Spec): AbilityDef[] {
   const out: AbilityDef[] = [];
@@ -45,11 +45,11 @@ const cull = (pct: number): Impl => c => { c.t!.drones -= Math.floor(c.t!.drones
 
 const IMPL: Record<string, Impl> = {
   fullburn: shipBuff('speed', 0.5, 30),
-  repair: c => { const n = c.n!; if (n.lane) n.lane.left = Math.max(0.1, n.lane.left - 25); n.nat = natMax(c.g, n); return null; },
+  repair: c => { const n = c.n!; if (n.lane) n.lane.left = Math.max(0.1, n.lane.left - 25); n.shields = shieldMax(c.g, n); return null; },
   surge: nodeBuff('mine', 0.5, 60),
   deepscan: tgtBuff('scan', 1, 60),
   flank: shipBuff('ignNat', 1),
-  lockdown: nodeBuff('def', 6, 45),
+  lockdown: c => { c.n!.buffs.push({ k: 'def', v: 6, until: c.g.t + 45 }); c.n!.shields += 6; return null; },
   sabotage: tgtBuff('frozen', 1, 45),
   parley: tgtBuff('def', -5, 60),
   breakthrough: research(30),
@@ -76,11 +76,11 @@ const IMPL: Record<string, Impl> = {
     c.g.offs = c.g.offs.filter(o => o.target !== c.n!.id);
     return null;
   },
-  breach: c => { c.t!.nat = 0; c.t!.buffs.push({ k: 'noRegen', v: 1, until: c.g.t + 60 }); updateVision(c.g); return null; },
+  breach: c => { c.t!.shields = 0; c.t!.buffs.push({ k: 'noRegen', v: 1, until: c.g.t + 60 }); updateVision(c.g); return null; },
   laststand: nodeBuff('dbl', 1, 30),
   reprise: resetCds,
   bribe: c => {
-    const t = c.t!, g = c.g, str = t.drones + Math.floor(t.nat);
+    const t = c.t!, g = c.g, str = t.drones + Math.floor(t.shields);
     if (str > 14) return 'Too strong to buy (strength above 14)';
     const cost = 2 * str;
     if (g.sides[PLAYER].ult < cost) return `Needs ${cost} Ultanium`;
@@ -94,14 +94,14 @@ const IMPL: Record<string, Impl> = {
     return null;
   },
   fence: c => { c.g.sides[c.sp.owner].ult += 2 * c.g.nodes.filter(n => n.owner === c.sp.owner).length; return null; },
-  rampart: c => { c.n!.nat = natMax(c.g, c.n!); return null; },
+  rampart: c => { c.n!.shields = shieldMax(c.g, c.n!); return null; },
   levy: c => { let any = false; for (const n of c.g.nodes) if (n.owner === c.sp.owner && n.kind === 'station' && totalDrones(c.g, c.sp.owner) + 3 <= droneCap(c.g, c.sp.owner)) { n.drones += 3; any = true; } return any ? null : 'Drone cap reached'; },
   foresight: c => { c.g.mob.prog = Math.max(0, c.g.mob.prog - 0.1); return null; },
   charge: shipBuff('atk', 5),
   slingshot: nodeBuff('sling', 1, 30),
   vein: c => { c.g.sides[c.sp.owner].ult += 25; return null; },
   fortify: c => {
-    const n = c.n!, id = n.kind === 'planet' ? 'shield' : (n.b.turret || 0) < BUILD.turret.max ? 'turret' : 'screen';
+    const n = c.n!, id = n.kind === 'planet' ? 'shield' : 'sshield';
     if ((n.b[id] || 0) >= BUILD[id].max) return 'No room for another structure';
     n.b[id] = (n.b[id] || 0) + 1; return null;
   },
@@ -113,7 +113,7 @@ const IMPL: Record<string, Impl> = {
   rally: c => addDrones(c, 8),
   slipstream: shipBuff('speed', 1, 40),
   sweep: scanAround(200, 45),
-  aegis: nodeBuff('def', 10, 45),
+  aegis: c => { c.n!.buffs.push({ k: 'def', v: 10, until: c.g.t + 45 }); c.n!.shields += 10; return null; },
   recall: goHome,
   crash: c => { if (!c.n!.lane) return 'Nothing is being built here'; c.n!.lane.left = 0.05; return null; },
   windfall: c => { c.g.sides[c.sp.owner].ult += 3 * c.g.nodes.filter(n => n.owner === c.sp.owner && n.kind === 'planet').length; return null; },

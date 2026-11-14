@@ -11,7 +11,7 @@ export interface GNode {
   id: number; name: string; kind: 'planet' | 'station';
   x: number; y: number; size: number; // planets: 0 small, 1 medium, 2 large
   owner: number; region: number; threat: number;
-  drones: number; nat: number;
+  drones: number; shields: number;
   b: Record<string, number>; // building / attachment counts
   lane: Task | null; queue: Task[];
   prod: number; // drone batch progress (stations)
@@ -32,6 +32,7 @@ export interface Ship {
   redirected: boolean; back: boolean; // back = returning empty-handed
   off: boolean; // part of a coalition offensive
   lane?: boolean; // a convoy travelling through a corridor rather than a ship
+  path?: number[]; // remaining corridor hops after `to`
   unload?: boolean; // cargo still to be unloaded at the node it reached
 }
 
@@ -50,7 +51,7 @@ export interface Spec {
 export interface Side {
   owner: number; kind: 'player' | 'faction' | 'archon';
   fac: string; // faction or archon id ('' for player)
-  ult: number; techs: string[]; techProg: Record<string, number>;
+  ult: number; techs: string[]; techProg: Record<string, number>; techLv: Record<string, number>;
   relics: string[];
   broken: boolean; aiT: number; expT: number; capBase: number;
   refundT: number; levyT: number;
@@ -59,11 +60,11 @@ export interface Side {
 export interface Intel {
   seen: number; // 0 never, 1 detected, 2 identified at some point
   t: number; // time of last full snapshot
-  snap: null | { owner: number; drones: number; nat: number; b: Record<string, number>; specs: number[]; prisoners: number[]; buffs: Buff[] };
+  snap: null | { owner: number; drones: number; shields: number; b: Record<string, number>; specs: number[]; prisoners: number[]; buffs: Buff[] };
 }
 
 export interface Pending {
-  kind: 'draft' | 'spec' | 'relic' | 'event' | 'perk';
+  kind: 'draft' | 'spec' | 'relic' | 'event' | 'perk' | 'crew';
   node: number; opts: any[]; title: string; event?: string;
 }
 

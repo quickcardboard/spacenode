@@ -15,6 +15,7 @@ function act(g: Game) {
       for (const id of ['gen', 'mine', 'mine', 'lab', 'shield']) if (!n.lane && !canBuild(g, n, id) && (id !== 'lab' || own.every(o => !o.b.lab))) exec(g, { c: 'build', node: n.id, id });
       if (n.b.lab && !n.research) { const av = techAvailable(g, PLAYER); if (av.length) exec(g, { c: 'research', node: n.id, id: av[0] }); }
     } else if (!n.lane) {
+      if (g.sides[PLAYER].ult > 120) exec(g, { c: 'muster', node: n.id });
       const ships = g.ships.filter(s => s.owner === PLAYER).length;
       if (ships < 3 + Math.floor(own.length / 4) && g.sides[PLAYER].ult >= 30) exec(g, { c: 'ship', node: n.id });
       else if (g.sides[PLAYER].ult > 90 && g.tick % 900 === 0) for (const id of ['barracks', 'dock', 'turret']) if (!canBuild(g, n, id)) { exec(g, { c: 'build', node: n.id, id }); break; }
