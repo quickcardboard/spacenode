@@ -1,11 +1,11 @@
 import type { Game, GNode, Fleet, Spec, Mods } from '../sim/types';
 import { PLAYER } from '../sim/types';
 import { CFG, SPECIALTY } from '../sim/config';
-import { SPECS, ARCHS, RELICS, TECHS, BRANCHES, FACTIONS, ARCHONS, EVENTS } from '../sim/content';
+import { SPECS, ARCHS, RELICS, TECHS, FACTIONS, ARCHONS, EVENTS } from '../sim/content';
 import { sideMods, perkDef, specLoc, power, specUpkeep, chargeCd, locMods } from '../sim/mods';
 import {
   calcBattle, viewOf, nodeIncome, workers, floorOf, shieldMax, aegis, totalDrones, slotsOf, slotsFree, crewMax, canUp, upCost, upTime, prodSecs, canProduce,
-  corridorsAt, corridorMax, corridorCost, corridorReach, rallyTarget, canMissile, launchSpeed, dist, sideName, sideColor, fleetSeen, eta, slots, activeSpecs,
+  corridorsAt, corridorMax, corridorCost, rallyPlan, incoming, canMissile, launchSpeed, route, dist, sideName, sideColor, fleetSeen, eta, slots, activeSpecs,
   specName, rescueWindow, eventChoiceOk, rpCost, fleetById, nodeMods, labRunning, type UpKind,
 } from '../sim/core';
 import { known } from './render';
@@ -13,7 +13,8 @@ import { known } from './render';
 export interface App {
   g: Game | null; speed: number; paused: boolean;
   sel: { type: 'node' | 'fleet'; id: number } | null; menu: string | null;
-  mode: null | { k: 'launch' | 'corridor' | 'convoy' | 'missile' | 'rallyTo'; from: number };
+  mode: null | { k: 'corridor' | 'missile'; from: number };
+  pickSpec: number; // node whose specialty choices are expanded, or -1
   launch: null | { from: number; to: number; drones: number; specs: number[]; lane: boolean };
   drag: null | { spec: number; x: number; y: number; over: number; label: string; ok: boolean };
   screen: 'title' | 'game' | 'help'; newThreat: number; meta: { runs: number; wins: number; unlocked: number; best: number };
@@ -61,7 +62,7 @@ export function hud(app: App): string {
   let banner = '';
   if (cmd && cmd.held && g.cmdLostT >= 0) banner = `<div class="banner bad" data-a="focus:${cmd.node}">★ COMMANDER CAPTURED at ${esc(g.nodes[cmd.node].name)}. Retake it in <b>${fmtT(rescueWindow(g) - (g.t - g.cmdLostT))}</b></div>`;
   else if (app.mode) {
-    const t = { launch: 'Tap a target for this fleet', corridor: 'Tap a glowing node to link a corridor', convoy: 'Tap a glowing node to send through corridors', missile: 'Tap a glowing node to strike', rallyTo: 'Tap the rally point this node should feed' }[app.mode.k];
+    const t = { corridor: 'Tap a glowing node to link a corridor', missile: 'Tap a glowing node to strike' }[app.mode.k];
     banner = `<div class="banner">${t} <button class="btn sm" data-a="cancelmode">Cancel</button></div>`;
   } else if (g.offs.length) {
     const o = g.offs[0];
@@ -131,66 +132,59 @@ function kvDef(g: Game, v: GNode, third: string, own: boolean) {
   return `<div class="kv"><div><small>GARRISON</small><b>⬢ ${v.drones}</b>${own && floorOf(g, v) ? `<small>keeps ${floorOf(g, v)}</small>` : ''}</div><div><small>SHIELD</small><b>◈ ${Math.floor(v.shields)}<i class="of">/${d.max}</i></b>${extra ? `<small>+${extra} ${d.p.aegis ? 'Aegis and ' : ''}Power</small>` : ''}</div>${third}</div>`;
 }
 const pips3 = (lv: number, max = 3) => `<span class="lvp">${Array.from({ length: max }, (_, i) => `<i class="${i < lv ? 'on' : ''}"></i>`).join('')}</span>`;
-function upBtn(g: Game, n: GNode, what: UpKind, label: string, lv: number, desc: string): string {
-  if (lv >= 3) return `<div class="upb done"><b>${label}</b>${pips3(lv)}<small>${desc}</small></div>`;
-  return `<button class="upb" data-a="up:${what}" ${canUp(g, n, what) ? 'disabled' : ''}><b>${label}</b>${pips3(lv)}<small>◆ ${upCost(g, n, what)} · ${upTime(what)}s</small><small>${desc}</small></button>`;
+/** One compact upgrade button: name, level pips, price. */
+function upBtn(g: Game, n: GNode, what: UpKind, label: string, lv: number): string {
+  if (lv >= 3) return `<div class="upb done"><b>${label}</b>${pips3(lv)}<small>max</small></div>`;
+  const why = canUp(g, n, what);
+  return `<button class="upb" data-a="up:${what}" ${why ? 'disabled' : ''} title="${why || ''}"><b>${label}</b>${pips3(lv)}<small>◆ ${upCost(g, n, what)}</small></button>`;
 }
 
 function ownNode(app: App, n: GNode): string {
   const g = app.g!, side = g.sides[PLAYER], m = nodeMods(g, n);
   let body = '';
+  const ready = slotsFree(g, n), total = slotsOf(g, n);
   const third = n.kind === 'planet'
-    ? `<div><small>INCOME</small><b>◆ ${num(nodeIncome(g, n, m))}</b><small>${workers(g, n) > n.drones ? `needs ${workers(g, n)} Drones working` : 'per minute'}</small></div>`
-    : `<div><small>DRONES</small><b>1 / ${num(prodSecs(g, n, m))}s</b><small>${!side.produce ? 'production paused' : canProduce(side) ? 'building' : 'army at income limit'}</small></div>`;
+    ? `<div><small>INCOME</small><b>◆ ${num(nodeIncome(g, n, m))}</b><small>${workers(g, n) > n.drones ? `needs ${workers(g, n)} working` : `fleets ${ready}/${total}`}</small></div>`
+    : `<div><small>1 DRONE / ${num(prodSecs(g, n, m))}s</small><b>▲ ${ready}/${total}</b><small>${!side.produce ? 'paused' : canProduce(side) ? 'fleets ready' : 'army at limit'}</small></div>`;
   body += kvDef(g, n, third, true);
   if (n.task) {
-    const t = n.task, nm = t.kind === 'lv' ? (n.kind === 'planet' ? 'Mine' : 'Barracks') + ` level ${n.lv + 1}` : t.kind === 'sh' ? `Shield level ${n.sh + 1}` : t.kind === 'spec' ? SPECIALTY[t.id].name : t.kind === 'missile' ? 'Missile' : `Corridor to ${g.nodes[+t.id].name}`;
-    body += `<div class="task"><div><b>${esc(nm)}</b><small>${fmtT(t.left)} left</small>${bar(1 - t.left / t.total, 'gold')}</div><button class="btn sm" data-a="cancel">✕</button></div>`;
+    const t = n.task, nm = t.kind === 'lv' ? (n.kind === 'planet' ? 'Mine' : 'Barracks') + ` ${n.lv + 1}` : t.kind === 'sh' ? `Shield ${n.sh + 1}` : t.kind === 'spec' ? SPECIALTY[t.id].name : t.kind === 'missile' ? 'Missile' : `Corridor to ${g.nodes[+t.id].name}`;
+    body += `<div class="task slim"><div><b>${esc(nm)} <small>${fmtT(t.left)}</small></b>${bar(1 - t.left / t.total, 'gold')}</div><button class="btn sm" data-a="cancel">✕</button></div>`;
   }
-  if (n.hold) body += `<div class="task"><div><b>${esc(n.hold.name)}</b><small>Hold with ${n.hold.need}+ Drones · ${fmtT(n.hold.until - g.t)} left</small>${bar(1 - (n.hold.until - g.t) / n.hold.total, 'blue')}</div></div>`;
-  if (n.event) body += btn('event', `! ${EVENTS[n.event].name}`, { cls: 'wide gold', sub: 'Investigate' });
+  if (n.hold) body += `<div class="task slim"><div><b>${esc(n.hold.name)} <small>hold ${n.hold.need}+ · ${fmtT(n.hold.until - g.t)}</small></b>${bar(1 - (n.hold.until - g.t) / n.hold.total, 'blue')}</div></div>`;
+  if (n.event) body += btn('event', `! ${EVENTS[n.event].name}`, { cls: 'wide gold slimb' });
 
-  // launch slots: tap a ready fleet, the panel gets out of the way, tap the target
-  const total = slotsOf(g, n), away = g.fleets.filter(f => f.slot && f.home === n.id && f.owner === PLAYER);
-  body += `<h3>Fleets <small>${total - away.length} of ${total} ready</small></h3><div class="srow">`;
-  for (let i = 0; i < total; i++) {
-    const f = away[i];
-    body += f ? `<div class="shipic away"><span class="hull">▲</span><small>→ ${esc(g.nodes[f.to].name)}</small><small>${fmtT(eta(g, f, g.nodes[f.to]))}</small></div>`
-      : `<button class="shipic" data-a="send"><span class="hull">▲</span><small>Launch</small></button>`;
-  }
-  if (corridorReach(g, n.id).length) body += `<button class="shipic lane" data-a="convoy"><span class="hull">⇄</span><small>Corridor</small></button>`;
-  if (n.spec === 'silo') body += n.missile ? `<button class="shipic missile" data-a="missile"><span class="hull">➹</span><small>Fire missile</small></button>` : `<button class="shipic" data-a="up:missile" ${canUp(g, n, 'missile') ? 'disabled' : ''}><span class="hull">➹</span><small>Build ◆ ${CFG.missileCost}</small></button>`;
+  // one row: level, shield, specialty, corridor (and the missile for a silo)
+  const cn = corridorsAt(g, n.id).length, cmx = corridorMax(g);
+  const corrWhy = cn >= cmx ? 'Maximum built' : n.task ? 'Busy upgrading' : side.ult < corridorCost(g) ? 'Not enough Ultanium' : '';
+  body += `<div class="ups">`;
+  body += upBtn(g, n, 'lv', n.kind === 'planet' ? 'Mine' : 'Barracks', n.lv);
+  body += upBtn(g, n, 'sh', 'Shield', n.sh);
+  body += n.spec ? `<div class="upb done" title="${esc(SPECIALTY[n.spec].desc)}"><b>${SPECIALTY[n.spec].name}</b><small>${n.spec === 'lab' && !labRunning(g, n) ? '<span class="warnp">unstaffed</span>' : 'specialty'}</small></div>`
+    : `<button class="upb ${app.pickSpec === n.id ? 'sel' : ''}" data-a="pickspec" ${n.task ? 'disabled' : ''}><b>Specialty</b><small>◆ ${upCost(g, n, 'spec')} · choose</small></button>`;
+  body += `<button class="upb" data-a="corridorpick" ${corrWhy ? 'disabled' : ''} title="${corrWhy}"><b>⇄ Corridor</b><small>${cn}/${cmx} · ◆ ${corridorCost(g)}</small></button>`;
+  if (n.spec === 'silo') body += n.missile ? `<button class="upb hotb" data-a="missile"><b>➹ Fire</b><small>pick a target</small></button>` : `<button class="upb" data-a="up:missile" ${canUp(g, n, 'missile') ? 'disabled' : ''}><b>➹ Missile</b><small>◆ ${CFG.missileCost}</small></button>`;
   body += `</div>`;
-
-  // upgrades: two levels and one specialty
-  body += `<h3>Upgrades</h3><div class="ups">`;
-  body += upBtn(g, n, 'lv', n.kind === 'planet' ? 'Mine' : 'Barracks', n.lv, n.kind === 'planet' ? `${num(CFG.mineOut[Math.min(3, n.lv + 1)] * CFG.sizeMult[n.size])}/min next` : `1 Drone / ${CFG.prodSecs[Math.min(3, n.lv + 1)]}s next`);
-  body += upBtn(g, n, 'sh', 'Shield', n.sh, `holds ${Math.min(3, n.sh + 1) * CFG.shieldPerLv}`);
-  body += `</div>`;
-  if (n.spec) body += `<div class="task"><div><b>${SPECIALTY[n.spec].name}</b><small>${SPECIALTY[n.spec].desc}${n.spec === 'lab' && !labRunning(g, n) ? ' <span class="warnp">Not running: needs more Drones here.</span>' : ''}</small></div></div>`;
-  else {
-    body += `<div class="specpick"><small>SPECIALTY · choose one, for good · ◆ ${upCost(g, n, 'spec')}</small><div>`;
+  if (!n.spec && app.pickSpec === n.id) {
+    body += `<div class="specpick"><small>Choose one, for good</small><div>`;
     for (const id in SPECIALTY) if (SPECIALTY[id].on === n.kind) body += `<button class="upb" data-a="up:spec:${id}" ${canUp(g, n, 'spec', id) ? 'disabled' : ''}><b>${SPECIALTY[id].name}</b><small>${SPECIALTY[id].desc}</small></button>`;
     body += `</div></div>`;
   }
 
-  // rally and logistics
-  const rt = n.rally ? null : rallyTarget(g, n);
-  const anyRally = g.nodes.some(o => o.owner === PLAYER && o.rally);
-  body += `<h3>Rally</h3><div class="row wrap">`;
-  body += btn('rally', n.rally ? '⚑ Rally point' : '⚐ Make rally point', { cls: n.rally ? 'hot' : '', sub: n.rally ? 'Spare Drones gather here' : 'Spare Drones from other nodes will flow here' });
-  if (!n.rally && anyRally) body += btn('rallyto', rt ? `Feeds ${esc(rt.name)}` : 'Feeds nothing', { sub: 'Tap to change' });
-  body += `<div class="stepper"><small>KEEP HERE</small><div><button class="btn sm" data-a="floor:-1">−</button><b>${floorOf(g, n)}</b><button class="btn sm" data-a="floor:1">+</button></div></div>`;
-  const cn = corridorsAt(g, n.id).length, cmx = corridorMax(g);
-  body += btn('corridorpick', `⇄ Corridor <i class="cnt">${cn}/${cmx}</i>`, { sub: `◆ ${corridorCost(g)} · ${CFG.corridorTime}s`, off: cn >= cmx ? 'Maximum built' : n.task ? 'Busy upgrading' : side.ult < corridorCost(g) ? 'Not enough Ultanium' : null });
-  body += `</div>`;
+  // one row: Supply or Front, Rally or Reinforce, and the Drones this node always keeps
+  const inc = incoming(g, n), plan = rallyPlan(g, n), sum = plan.reduce((s2, l) => s2 + l.k, 0);
+  body += `<div class="ralrow">
+    <div class="seg"><button data-a="front:0" class="${n.front ? '' : 'on'}" title="Supply: sends its spare Drones when its nearest Front rallies">Supply</button><button data-a="front:1" class="${n.front ? 'on' : ''}" title="Front: never sends its Drones away">Front</button></div>
+    <button class="btn ral ${inc >= 0 ? 'alarm' : 'hot'}" data-a="rally" ${plan.length ? '' : 'disabled'}><b>${inc >= 0 ? `Reinforce · hit in ${fmtT(inc)}` : 'Rally here'}</b><small>${plan.length ? `⬢ ${sum} from ${plan.length} node${plan.length > 1 ? 's' : ''}` : inc >= 0 ? 'none can arrive in time' : 'no spare Drones'}</small></button>
+    <div class="stepper" title="Drones this node never sends away"><small>KEEP</small><div><button class="btn sm" data-a="floor:-1">−</button><b>${floorOf(g, n)}</b><button class="btn sm" data-a="floor:1">+</button></div></div>
+  </div>`;
+  body += `<p class="hint">Drag from this node onto another to send a fleet${corridorsAt(g, n.id).length ? ' or use a corridor' : ''}.</p>`;
 
   if (n.prisoners.length) {
     const sm = sideMods(g, PLAYER);
-    body += `<h3>Prisoners</h3>`;
     for (const i of n.prisoners) {
       const sp = g.specs[i], leader = sp.def === 'warlord' || sp.def === 'archon', dup = g.specs.some(o => o.owner === PLAYER && o.def === sp.def);
-      body += `<div class="task"><div class="rowc">${token(g, sp, false, true)} <b>${esc(specName(sp))}</b><small>${esc(sideName(g, sp.owner))}</small></div>${leader ? '' : btn(`ransom:${i}`, `Ransom +${Math.round(CFG.ransom * (1 + (sm.ransom || 0)))}`, { cls: 'sm' }) + (sp.def === 'captain' || dup ? '' : btn(`recruit:${i}`, `Recruit ◆ ${sm.recruitFree ? 0 : CFG.recruitCost}`, { cls: 'sm hot' }))}</div>`;
+      body += `<div class="task slim"><div class="rowc">${token(g, sp, false, true)} <b>${esc(specName(sp))}</b><small>prisoner</small></div>${leader ? '' : btn(`ransom:${i}`, `+${Math.round(CFG.ransom * (1 + (sm.ransom || 0)))}`, { cls: 'sm' }) + (sp.def === 'captain' || dup ? '' : btn(`recruit:${i}`, `Recruit ◆ ${sm.recruitFree ? 0 : CFG.recruitCost}`, { cls: 'sm hot' }))}</div>`;
     }
   }
   return `${passiveRow(g, n, true)}<div class="pbody">${body}</div>`;
@@ -213,10 +207,9 @@ function foreignNode(app: App, n: GNode): string {
     if (n.capital && g.sides[v.owner]?.kind === 'faction') body += `<p class="goodp">♛ Capital of the ${FACTIONS[g.sides[v.owner].fac].name}. Capture it and the whole faction surrenders.</p>`;
     if (n.citadel) body += `<p class="goodp">✦ The Citadel. Capture it to win.</p>`;
   }
-  const src = g.nodes.filter(o => o.owner === PLAYER && slotsFree(g, o) > 0 && (o.specs.length || o.drones)).sort((a, b) => dist(a, n) - dist(b, n)).slice(0, 5);
-  body += `<h3>Send a fleet from</h3>`;
-  if (!src.length) body += `<p class="dim">No node has a free launch slot.</p>`;
-  for (const o of src) body += `<button class="btn wide fromrow" data-a="from:${o.id}"><span><b>${esc(o.name)}</b><small>⬢ ${o.drones} · ${fmtT(dist(o, n) / launchSpeed(g, o, []))} flight</small></span><span class="crewmini">${o.specs.slice(0, 4).map(i => token(g, g.specs[i], false, true)).join('') || '<small>no leader</small>'}</span></button>`;
+  const src = g.nodes.filter(o => o.owner === PLAYER && slotsFree(g, o) > 0 && (o.specs.length || o.drones)).sort((a, b) => dist(a, n) - dist(b, n)).slice(0, 4);
+  if (src.length) body += `<div class="crewline stay"><small>SEND FROM · or drag from your node onto this one</small><div>${src.map(o => `<button class="chip" data-a="from:${o.id}">${esc(o.name)} ⬢${o.drones} · ${fmtT(dist(o, n) / launchSpeed(g, o, []))}</button>`).join('')}</div></div>`;
+  else body += `<p class="hint">No node has a fleet ready to send here.</p>`;
   const silo = g.nodes.find(o => o.owner === PLAYER && !canMissile(g, o, n));
   if (silo) body += btn(`missilefrom:${silo.id}`, '➹ Missile strike', { cls: 'wide gold', sub: `From ${esc(silo.name)}: wipes the shield and kills ${CFG.missileKill} Drones` });
   return `${head}<div class="pbody">${body}</div>`;
@@ -229,40 +222,48 @@ export function minToWin(g: Game, L: NonNullable<App['launch']>): number {
   for (let d = 1; d <= from.drones; d++) if (calcBattle(g, PLAYER, d, L.specs, v).win) return d;
   return 0;
 }
+/** Does this specialist make an attack stronger? Used to highlight them in the load-out. */
+export function offensive(g: Game, sp: Spec): boolean {
+  const m = specLoc(g, sp), d = SPECS[sp.def];
+  return !!(m.atk || m.per4 || m.pierce || m.strike || m.vsNeutral || (m.surv || 0) > 0 || m.salvage || m.stealth || d.charge?.on === 'attack');
+}
 export function launchPreview(g: Game, L: NonNullable<App['launch']>): string {
   const from = g.nodes[L.from], to = g.nodes[L.to];
-  const secs = L.lane ? 0 : dist(from, to) / launchSpeed(g, from, L.specs);
-  let out = `<div class="lstat"><span>⬢ <b>${L.drones}</b> go</span><span>⬢ <b>${from.drones - L.drones}</b> stay</span>${L.lane ? '<span>via corridor</span>' : `<span>arrives <b>${fmtT(secs)}</b></span>`}</div>`;
-  if (L.specs.includes(g.cmdSpec) && to.owner !== PLAYER) out += `<p class="warnp">★ Commander aboard. If this attack fails at an enemy node they are captured.</p>`;
+  const secs = L.lane ? route(g, from, to, L.specs).secs : dist(from, to) / launchSpeed(g, from, L.specs);
+  let out = `<div class="lstat"><span>⬢ <b>${L.drones}</b> go</span><span>⬢ <b>${from.drones - L.drones}</b> stay</span><span>arrives <b>${fmtT(secs)}</b></span></div>`;
   if (to.owner === PLAYER) return out;
-  if (!L.specs.length) return out + (L.drones ? `<p class="badp"><b>An attack needs a specialist to lead it.</b> Add one, or set Drones to 0 to send a probe.</p>` : `<p class="warnp">Probe: identifies the target and is lost.</p>`);
+  if (!L.specs.length) return out + (L.drones ? `<p class="badp"><b>An attack needs a specialist to lead it.</b> Add one, or send 0 Drones as a probe.</p>` : `<p class="warnp">Probe: identifies the target and is lost.</p>`);
   const view = viewOf(g, to);
   if (!view.v) return out + `<p class="badp"><b>Unknown forces. Battle outcome unavailable.</b></p>`;
   const r = calcBattle(g, PLAYER, L.drones, L.specs, view.v), p = r.parts;
-  const atk = [`${p.drones} Drones`, `${p.pow} Power`].concat(p.bonus ? [`+${p.bonus} bonus`] : []).join(' + ');
-  const def = [`${p.garr} Drones`].concat(p.shield ? [`${p.shield} shield`] : [], p.dpow ? [`${p.dpow} Power`] : [], p.ddef ? [`${p.ddef} bonus`] : [], p.aegis ? [`${p.aegis} Aegis`] : []).join(' + ');
-  out += `<div class="versus"><div><small>ATTACK</small><b>${r.atk}</b><span>${atk}</span></div><i>vs</i><div><small>DEFENCE</small><b>${r.def}</b><span>${def}</span></div></div>`;
-  if (p.lance) out += `<p class="warnp">${p.lance} of your Drones are destroyed before landing.</p>`;
-  if (p.strike) out += `<p class="goodp">Your first strike destroys ${p.strike} defenders.</p>`;
+  const atk = [`${p.drones}⬢`, `${p.pow} Power`].concat(p.bonus ? [`+${p.bonus}`] : []).join(' + ');
+  const def = [`${p.garr}⬢`].concat(p.shield ? [`${p.shield} shield`] : [], p.dpow ? [`${p.dpow} Power`] : [], p.ddef ? [`+${p.ddef}`] : [], p.aegis ? [`${p.aegis} Aegis`] : []).join(' + ');
   const lead = g.specs[L.specs[0]];
-  out += r.win ? `<p class="goodp"><b>Victory expected.</b> ${r.surv} Drones survive.${lead && !lead.cmd && !lead.up ? ` ${short(lead)} leads and will be upgraded.` : ''}</p>`
-    : `<p class="badp"><b>Defeat expected.</b> Short by ${r.def - r.atk + 1}. ${to.owner === 0 ? 'Drones are lost; the crew returns.' : 'Drones are lost and the crew is captured.'}</p>`;
-  if (!view.live) out += `<p class="warnp">Based on intelligence ${fmtT(view.age)} old.</p>`;
+  const notes = [p.lance ? `${p.lance} lost before landing` : '', p.strike ? `first strike kills ${p.strike}` : '', !view.live ? `intel ${fmtT(view.age)} old` : '', L.specs.includes(g.cmdSpec) ? '★ Commander at risk' : ''].filter(Boolean).join(' · ');
+  out += `<div class="vs ${r.win ? 'win' : 'lose'}"><div><b>${r.atk}</b><small>${atk}</small></div><i>${r.win ? '>' : '≤'}</i><div><b>${r.def}</b><small>${def}</small></div></div>`;
+  out += r.win ? `<p class="goodp"><b>Victory:</b> ${r.surv} Drones survive.${lead && !lead.cmd && !lead.up ? ` ${short(lead)} is upgraded.` : ''}</p>`
+    : `<p class="badp"><b>Defeat:</b> short by ${r.def - r.atk + 1}. ${to.owner === 0 ? 'The crew returns.' : 'The crew is captured.'}</p>`;
+  if (notes) out += `<p class="warnp small">${notes}</p>`;
   return out;
 }
 function launchBar(app: App): string {
   const g = app.g!, L = app.launch!, from = g.nodes[L.from], to = g.nodes[L.to];
   if (from.owner !== PLAYER) { app.launch = null; return ''; }
-  const max = L.lane ? 99 : crewMax(g, from);
-  const chosen = L.specs.map((id, i) => `<button class="cslot full" data-a="lspec:${id}">${token(g, g.specs[id], true, true)}<small>${i === 0 && !L.lane ? 'LEADER' : short(g.specs[id])}</small></button>`);
-  const empty = Array(Math.max(0, Math.min(max, 3 + (max > 3 ? max - 3 : 0)) - L.specs.length)).fill(0).map((_, i) => `<div class="cslot"><small>${L.specs.length + i === 0 ? 'leader' : 'empty'}</small></div>`);
+  const attack = to.owner !== PLAYER;
+  // what each specialist adds to this attack, so the choice is a number and not a guess
+  const v = attack ? viewOf(g, to).v : null;
+  const atkOf = (ids: number[]) => (v ? calcBattle(g, PLAYER, L.drones, ids, v).atk - (calcBattle(g, PLAYER, L.drones, ids, v).parts.strike ? 0 : 0) : ids.reduce((t, i) => t + power(g, g.specs[i]), 0));
+  const gain = (id: number) => (L.specs.includes(id) ? atkOf(L.specs) - atkOf(L.specs.filter(i => i !== id)) : atkOf(L.specs.concat(id)) - atkOf(L.specs));
+  const chipFor = (id: number, on: boolean, lead: boolean) => { const sp = g.specs[id]; return `<button class="chip ${on ? 'on' : ''} ${attack && offensive(g, sp) ? 'offs' : ''}" data-a="lspec:${id}">${token(g, sp, false, true)} ${esc(short(sp))}${attack ? ` <i class="gain">+${gain(id)}</i>` : ''}${lead ? ' <i class="lead">LEADS</i>' : ''}</button>`; };
+  const chosen = L.specs.map((id, i) => chipFor(id, true, i === 0 && attack)).join('');
   const avail = from.specs.filter(i => !L.specs.includes(i));
-  return `<div class="phead"><div><h2>${esc(from.name)} → ${esc(to.name)}</h2><small>${L.lane ? 'Through corridors: no launch slot needed' : to.owner === PLAYER ? 'Reinforce' : 'Attack'}</small></div><button class="btn ico" data-a="lcancel">✕</button></div>
+  const availHtml = avail.map(i => chipFor(i, false, false)).join('');
+  const cap = L.lane ? '' : ` ${L.specs.length}/${crewMax(g, from)}`;
+  return `<div class="phead"><div><h2>${esc(from.name)} → ${esc(to.name)}</h2><small>${L.lane ? 'Through corridors (quickest route)' : attack ? 'Attack' : 'Reinforce by fleet'}</small></div><button class="btn ico" data-a="lcancel">✕</button></div>
   <div class="pbody">
-    <div class="crewslots" data-drop="crew">${chosen.join('')}${empty.join('')}</div>
-    ${avail.length ? `<div class="availrow"><small>AT ${esc(from.name.toUpperCase())} · tap or drag into a slot</small><div>${avail.map(i => `<button class="chip" data-a="lspec:${i}">${token(g, g.specs[i], false, true)} ${esc(short(g.specs[i]))}</button>`).join('')}</div></div>` : ''}
-    <input type="range" id="lslider" min="0" max="${from.drones}" value="${L.drones}">
-    <div class="quick">${btn('lq:none', '0', { cls: 'sm' })}${L.lane || to.owner === PLAYER ? '' : btn('lq:min', 'Just enough', { cls: 'sm' })}${btn('lq:half', 'Half', { cls: 'sm' })}${btn('lq:all', 'All', { cls: 'sm' })}</div>
+    <div class="drow"><input type="range" id="lslider" min="0" max="${from.drones}" value="${L.drones}"><div class="quick">${btn('lq:none', '0', { cls: 'sm' })}${attack && !L.lane ? btn('lq:min', 'Enough', { cls: 'sm' }) : btn('lq:half', '½', { cls: 'sm' })}${btn('lq:all', 'All', { cls: 'sm' })}</div></div>
+    <div class="crewline" data-drop="crew"><small>GOING${cap}</small><div>${chosen || `<span class="ph">${attack ? 'Tap or drag a specialist here to lead' : 'No specialists travelling'}</span>`}</div></div>
+    ${avail.length ? `<div class="crewline stay"><small>STAYING AT ${esc(from.name.toUpperCase())}</small><div>${availHtml}</div></div>` : ''}
     <div id="preview">${launchPreview(g, L)}</div>
     <div class="row">${btn('lcancel', 'Cancel')}${btn('lconfirm', L.lane ? 'Send' : 'Launch', { cls: 'hot grow' })}</div>
   </div>`;
@@ -288,21 +289,6 @@ export function panel(app: App): string {
   return `<div class="phead"><div><h2><span class="dot" style="background:${col}"></span>${esc(n.name)}</h2><small>${sub}</small></div><button class="btn ico" data-a="close">✕</button></div>${n.owner === PLAYER ? ownNode(app, n) : foreignNode(app, n)}`;
 }
 
-// ------------------------------------------------------------------ research tree
-/** The tree as a small diagram: one row per branch, doctrine pairs stacked. `offered` cards are lit. */
-export function techTree(g: Game, offered: string[] = []): string {
-  const have = g.sides[PLAYER].techs;
-  const cell = (id: string) => {
-    const t = TECHS[id], known2 = have.includes(id), locked = !!t.excl && have.includes(t.excl);
-    return `<div class="tn ${known2 ? 'have' : ''} ${locked ? 'locked' : ''} ${offered.includes(id) ? 'offer' : ''}" title="${esc(t.desc)}">${known2 ? '✓ ' : ''}${t.name}</div>`;
-  };
-  return `<div class="tree">${BRANCHES.map(b => {
-    const list = Object.values(TECHS).filter(t => t.branch === b);
-    const tier = (k: number) => `<div class="tcol">${list.filter(t => t.tier === k).map(t => cell(t.id)).join('')}</div>`;
-    return `<div class="trow"><small>${b}</small>${[1, 2, 3, 4].map(tier).join('<i>›</i>')}</div>`;
-  }).join('')}</div>`;
-}
-
 // ------------------------------------------------------------------ global menu
 export function menu(app: App): string {
   const g = app.g!, side = g.sides[PLAYER];
@@ -311,8 +297,8 @@ export function menu(app: App): string {
   if (app.menu === 'research') {
     const rc = rpCost(g, PLAYER), labs = g.nodes.filter(n => n.owner === PLAYER && n.spec === 'lab');
     body = `<div class="task"><div><b>Next choice</b><small>${side.rpm > 0 ? `${num(side.rpm)} research per minute · ${fmtT(Math.max(0, (rc - side.rp) / side.rpm) * 60)} to go` : 'No research yet: give a planet the Lab specialty'}</small>${bar(side.rp / rc, 'blue')}</div></div>
-      <p class="dim">Each time the bar fills you choose 1 of 3 cards from the edge of the tree. More Labs fill it faster. In a doctrine pair (stacked boxes) choosing one locks the other. Labs: ${labs.length ? labs.map(n => `<span class="link" data-a="focus:${n.id}">${esc(n.name)}${labRunning(g, n) ? '' : ' (not staffed)'}</span>`).join(', ') : 'none'}.</p>${techTree(g)}`;
-    for (const id of side.techs) body += `<div class="tech done"><b>✓ ${TECHS[id].name}</b><small>${TECHS[id].desc}</small></div>`;
+      <p class="dim">Each time the bar fills you choose 1 of 3 technologies. What you choose decides what can be offered next. Labs: ${labs.length ? labs.map(n => `<span class="link" data-a="focus:${n.id}">${esc(n.name)}${labRunning(g, n) ? '' : ' (not staffed)'}</span>`).join(', ') : 'none'}.</p>`;
+    body += side.techs.length ? `<h3>Researched</h3>` + side.techs.map(id => `<div class="tech done"><b>${TECHS[id].name} <small>${TECHS[id].branch}</small></b><small>${TECHS[id].desc}</small></div>`).join('') : '';
   } else if (app.menu === 'roster') {
     const mine = g.specs.filter(s => s.owner === PLAYER);
     body = mine.map(sp => `<div class="spec" data-a="${sp.node >= 0 ? `focus:${sp.node}` : 'noop'}">${token(g, sp, true, true)}<div><h4>${esc(sp.cmd ? `Commander · ${SPECS[sp.def].name} ${ARCHS[sp.cmd.arch].name} · L${sp.cmd.lvl}` : specName(sp) + (sp.up ? ' +' : ''))} <small>${SPECS[sp.def].role}</small></h4><small>${sp.held ? 'Prisoner at ' : sp.node >= 0 ? 'At ' : 'In flight'}${sp.node >= 0 ? esc(g.nodes[sp.node].name) : ''}${sp.cmd ? '' : ` · upkeep ◆ ${num(specUpkeep(g, sp))}/min`}</small><p>${specText(g, sp)}</p>${sp.cmd && sp.cmd.lvl < 5 ? bar((sp.cmd.xp - CFG.xpLevels[sp.cmd.lvl - 1]) / (CFG.xpLevels[sp.cmd.lvl] - CFG.xpLevels[sp.cmd.lvl - 1]), 'gold') : ''}</div></div>`).join('');
@@ -364,7 +350,7 @@ export function modal(app: App): string {
   }
   if (p.kind === 'spec') {
     cards = p.opts.map((id: string, i: number) => specCard(id, i)).join('');
-    return `<div class="modal"><h2>${esc(p.title)}</h2><p class="dim">Recruit one, or none: every specialist costs upkeep. A fleet needs a specialist to lead an attack, and the leader of a winning attack is upgraded once.</p><div class="cards">${cards}</div>${btn('choose:-1', 'Skip', { cls: 'wide' })}</div>`;
+    return `<div class="modal"><h2>${esc(p.title)}</h2><p class="dim">Recruits are only found on neutral planets. Take one, or none: every specialist costs upkeep. A fleet needs a specialist to lead an attack, and the leader of a winning attack is upgraded once.</p><div class="cards">${cards}</div>${btn('choose:-1', 'Skip', { cls: 'wide' })}</div>`;
   }
   if (p.kind === 'relic') {
     cards = p.opts.map((id: string, i: number) => { const r = RELICS[id]; return `<button class="card relic ${r.rarity}" data-a="choose:${i}"><h3>${r.name}</h3><small>${r.rarity}</small><p>${r.desc}</p></button>`; }).join('');
@@ -376,8 +362,8 @@ export function modal(app: App): string {
     return `<div class="modal"><h2>${esc(p.title)}</h2>${lvl === 3 || lvl === 5 ? '<p class="goodp">Commander Power +1.</p>' : ''}<div class="cards">${cards}</div></div>`;
   }
   if (p.kind === 'tech') {
-    cards = p.opts.map((id: string, i: number) => { const t = TECHS[id]; return `<button class="card tech${t.excl ? ' doc' : ''}" data-a="choose:${i}"><small>${t.branch} · tier ${t.tier}</small><h3>${t.name}</h3><p>${t.desc}</p>${t.excl ? `<small class="why">Doctrine: locks out ${TECHS[t.excl].name}</small>` : ''}</button>`; }).join('');
-    return `<div class="modal"><h2>Research: choose one</h2><div class="cards">${cards}</div>${techTree(g, p.opts)}</div>`;
+    cards = p.opts.map((id: string, i: number) => { const t = TECHS[id]; return `<button class="card tech${t.excl ? ' doc' : ''}" data-a="choose:${i}"><small>${t.branch} · tier ${t.tier}</small><h3>${t.name}</h3><p>${t.desc}</p>${t.excl ? `<small class="why">Either this or ${TECHS[t.excl].name}, never both</small>` : ''}</button>`; }).join('');
+    return `<div class="modal"><h2>Research: choose one</h2><p class="dim">Your choice shapes what is offered next.</p><div class="cards">${cards}</div></div>`;
   }
   const ev = EVENTS[p.event!], n = g.nodes[p.node];
   cards = ev.choices.map((c, i) => {
@@ -405,13 +391,13 @@ export function help(): string {
   <p><b>Goal.</b> Capture <b>The Citadel</b> ✦. You lose if your <b>Commander</b> ★ is captured and not rescued in time.</p>
   <p><b>Specialists are the game.</b> Each has a <b>Power</b> number and one passive effect. Power adds to attack when they fly with a fleet and to defence where they stand. A fleet <b>needs a specialist to lead</b> an attack, and the leader of a winning attack is upgraded once. Three work together at a node or in a fleet; extras wait in reserve.</p>
   <p><b>Roster.</b> Your specialists are always shown down the side. Tap one to jump to them, hold (or hover) for details, <b>drag one onto a friendly node</b> to send them there.</p>
-  <p><b>Attacking.</b> Tap one of your nodes, tap a ready fleet ▲, then tap the target. Put specialists in the crew slots, set the Drones, and read the exact outcome before you launch. Attack must beat Drones + shield + defending Power.</p>
+  <p><b>Sending fleets.</b> <b>Drag from one of your nodes onto any other node.</b> Onto an enemy or neutral node it is an attack; onto your own it reinforces, through a corridor if one connects them. A sheet opens: set the Drones, choose who goes (specialists that help an attack glow), and read the exact outcome before you launch. Attack must beat Drones + shield + defending Power.</p>
   <p><b>Economy.</b> Planets mine Ultanium ◆; stations build Drones ⬢ on their own. Every Drone and specialist costs upkeep, so your income sets the size of your army. The ⬢ button in the top bar pauses production when you want to save.</p>
   <p><b>Nodes.</b> Each has two levels to raise (Mine or Barracks, and Shield) and one <b>specialty</b> chosen once: Refinery, Lab or Supply world for planets; Missile Silo, Depot or Launch Bay for stations.</p>
-  <p><b>Rally points.</b> Mark a node ⚑ and spare Drones flow to it by themselves. Corridors ⇄ make that twice as fast and carry specialists without using a fleet.</p>
+  <p><b>Supply and Front.</b> Every node is Supply or Front. Press <b>Rally</b> on a node and every Supply node sends its spare Drones there, once. Front nodes never give theirs up. If the node is about to be hit, Rally becomes <b>Reinforce</b> and only Drones that can arrive in time are sent. Corridors ⇄ carry Drones and specialists at double speed without using a fleet.</p>
   <p><b>Research.</b> Labs fill a bar; when it is full you choose 1 of 3 cards.</p>
   <p><b>The Coalition.</b> Three factions and an Archon. Mobilization grows their armies over time. Capture a faction's capital ♛ and the whole faction surrenders.</p>
-  <p><b>Controls.</b> Drag or WASD to scroll, pinch or wheel to zoom, Space pauses, 1/2/3 speed, M menu, H home, Esc cancels.</p>
+  <p><b>Controls.</b> Phone: two fingers pan and zoom (one finger on empty space also pans). Desktop: move the mouse to a screen edge or use WASD to scroll, wheel to zoom, Space pauses, 1/2/3 speed, M menu, H home, Esc cancels.</p>
   ${btn('helpclose', 'Got it', { cls: 'wide hot' })}</div>`;
 }
 void locMods;

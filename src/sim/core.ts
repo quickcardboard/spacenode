@@ -48,7 +48,9 @@ export function toNode(g: Game, sp: Spec, n: GNode, prisonerOf = 0) {
 export function toFleet(g: Game, sp: Spec, f: Fleet) { detach(g, sp); sp.fleet = f.id; f.specs.push(sp.id); g.modV++; }
 export function removeSpec(g: Game, sp: Spec) { detach(g, sp); sp.owner = -1; sp.held = 0; g.modV++; }
 export const slots = (g: Game, owner: number) => CFG.specSlots + (sideMods(g, owner).slots || 0);
-export const activeSpecs = (g: Game, n: { owner: number; specs: number[] }) => n.specs.slice(0, slots(g, n.owner));
+/** Active specialist places at a node (a Command Post has one more). */
+export const nodeSlots = (g: Game, n: { owner: number; spec?: string }) => slots(g, n.owner) + (n.spec === 'post' ? 1 : 0);
+export const activeSpecs = (g: Game, n: { owner: number; specs: number[]; spec?: string }) => n.specs.slice(0, nodeSlots(g, n));
 export const specName = (sp: Spec) => sp.name || SPECS[sp.def].name;
 export const nodeMods = (g: Game, n: { owner: number; specs: number[]; buffs: { k: string; v: number; until: number }[] }, on?: 'defend') => locMods(g, n.owner, activeSpecs(g, n), n.buffs, on);
 /** Move a reserve specialist into the active slots (the last active one drops to reserve). */
@@ -87,23 +89,21 @@ export const labRunning = (g: Game, n: GNode) => n.spec === 'lab' && (!!sideMods
 export interface Econ { inc: number; upk: number; net: number; drones: number; free: number; rpm: number; specUp: number }
 export function economy(g: Game, owner: number): Econ {
   const side = g.sides[owner], sm = sideMods(g, owner);
-  let inc = (side.kind === 'player' ? CFG.baseIncome : 4) + (sm.income || 0), drones = 0, free = (sm.freeDrones || 0) + side.free + (side.kind === 'player' ? CFG.freeBase : 0), depot = 0, rpm = sm.rp || 0;
+  let inc = (side.kind === 'player' ? CFG.baseIncome : 4) + (sm.income || 0), drones = 0, free = (sm.freeDrones || 0) + side.free + (side.kind === 'player' ? CFG.freeBase : 0), rpm = sm.rp || 0;
   for (const n of g.nodes) {
     if (n.owner !== owner) continue;
     const m = nodeMods(g, n);
     inc += nodeIncome(g, n, m);
     drones += n.drones;
     free += m.free || 0;
-    if (n.spec === 'supply') free += CFG.supplyFree;
-    if (n.spec === 'depot') depot += n.drones;
     if (labRunning(g, n)) rpm += CFG.labRp;
     rpm += m.research || 0;
   }
   for (const f of g.fleets) if (f.owner === owner) drones += f.drones;
   let specUp = 0;
-  for (const sp of g.specs) { if (sp.owner === owner && !sp.held) specUp += specUpkeep(g, sp); else if (sp.held === owner && sm.prisonInc) inc += sm.prisonInc; }
+  for (const sp of g.specs) { if (sp.owner === owner && !sp.held) { if (!(sp.node >= 0 && g.nodes[sp.node].spec === 'post' && g.nodes[sp.node].owner === owner)) specUp += specUpkeep(g, sp); } else if (sp.held === owner && sm.prisonInc) inc += sm.prisonInc; }
   const paid = Math.max(0, drones - free);
-  const upk = (paid - Math.min(depot, paid) * (1 - CFG.depotMult)) * CFG.upkeepDrone + specUp;
+  const upk = paid * CFG.upkeepDrone + specUp;
   return { inc, upk, net: inc - upk, drones, free, rpm, specUp };
 }
 
@@ -303,8 +303,8 @@ function takeNode(g: Game, n: GNode, now: number, garrison: number) {
   for (const o of g.nodes) if (o.task?.kind === 'corridor' && +o.task.id === n.id) { if (g.sides[o.owner]) g.sides[o.owner].ult += o.task.cost; o.task = null; }
   if (old !== 0) captureSpecs(g, n.specs, n, now);
   for (const id of n.prisoners.slice()) { const sp = g.specs[id]; if (sp.owner === now) { toNode(g, sp, n); if (now === PLAYER) log(g, `${specName(sp)} was rescued at ${n.name}`, 'good', n.id); } else sp.held = now || -1; }
-  n.owner = now; n.drones = garrison; n.shields = 0; n.task = null; n.prod = 0; n.hold = null; n.buffs = []; n.rally = false; n.rallyTo = -1; n.floor = 0; n.missile = 0;
-  for (const o of g.nodes) if (o.rallyTo === n.id) o.rallyTo = -1;
+  n.owner = now; n.drones = garrison; n.shields = 0; n.task = null; n.prod = 0; n.hold = null; n.buffs = []; n.front = false; n.floor = 0; n.missile = 0;
+  if (now !== PLAYER) n.offer = false; // recruits do not wait around under Coalition rule
   g.modV++;
 }
 function playerGains(g: Game, n: GNode) {
@@ -452,6 +452,23 @@ export function convoy(g: Game, a: GNode, b: GNode, drones: number, specIds: num
   for (const i of specIds) toFleet(g, g.specs[i], f);
   return null;
 }
+/** Corridor travel time between two of your nodes, or -1 with no route. */
+export function laneSecs(g: Game, from: GNode, to: GNode): number {
+  const path = corridorPath(g, from.id, to.id);
+  if (!path) return -1;
+  let d = 0, prev: GNode = from;
+  for (const id of path) { d += dist(prev, g.nodes[id]); prev = g.nodes[id]; }
+  return d / (CFG.fleetSpeed * CFG.corridorSpeed * (1 + (sideMods(g, from.owner).laneSpeed || 0)));
+}
+/** The quicker way between two friendly nodes: corridor or direct flight. A fleet needs a free launch slot. */
+export function route(g: Game, from: GNode, to: GNode, crew: number[] = []): { secs: number; via: 'corridor' | 'fleet' | null } {
+  const lane = laneSecs(g, from, to);
+  const canFly = slotsFree(g, from) > 0 || !!locMods(g, from.owner, crew, []).slotFree;
+  const fly = canFly ? dist(from, to) / launchSpeed(g, from, crew) : -1;
+  if (lane >= 0 && (fly < 0 || lane <= fly)) return { secs: lane, via: 'corridor' };
+  if (fly >= 0) return { secs: fly, via: 'fleet' };
+  return { secs: 0, via: null };
+}
 /** How a lone specialist would travel to a friendly node, and how long it takes. */
 export function moveEta(g: Game, sp: Spec, to: GNode): { secs: number; via: 'corridor' | 'fleet' | null; why: string } {
   if (sp.held) return { secs: 0, via: null, why: 'They are a prisoner' };
@@ -459,15 +476,8 @@ export function moveEta(g: Game, sp: Spec, to: GNode): { secs: number; via: 'cor
   const from = g.nodes[sp.node];
   if (to.owner !== sp.owner) return { secs: 0, via: null, why: 'Only your own nodes' };
   if (to.id === from.id) return { secs: 0, via: null, why: 'Already there' };
-  const path = corridorPath(g, from.id, to.id);
-  if (path) {
-    let d = 0, prev: GNode = from;
-    for (const id of path) { d += dist(prev, g.nodes[id]); prev = g.nodes[id]; }
-    return { secs: d / (CFG.fleetSpeed * CFG.corridorSpeed * (1 + (sideMods(g, sp.owner).laneSpeed || 0))), via: 'corridor', why: '' };
-  }
-  const free = !!locMods(g, sp.owner, [sp.id], []).slotFree || slotsFree(g, from) > 0;
-  if (!free) return { secs: 0, via: null, why: `No free launch slot at ${from.name} and no corridor route` };
-  return { secs: dist(from, to) / launchSpeed(g, from, [sp.id]), via: 'fleet', why: '' };
+  const r = route(g, from, to, [sp.id]);
+  return r.via ? { ...r, why: '' } : { secs: 0, via: null, why: `No free launch slot at ${from.name} and no corridor route` };
 }
 export function moveSpec(g: Game, sp: Spec, to: GNode): string | null {
   const e = moveEta(g, sp, to);
@@ -491,20 +501,51 @@ export function fireMissile(g: Game, from: GNode, to: GNode): string | null {
   return null;
 }
 
-// ---------------------------------------------------------------- rally points
+// ---------------------------------------------------------------- rally and reinforce
 export const floorOf = (g: Game, n: GNode) => Math.max(n.floor, workers(g, n));
-export function rallyTarget(g: Game, n: GNode): GNode | null {
-  if (n.rallyTo >= 0) { const t = g.nodes[n.rallyTo]; if (t.owner === n.owner && t.rally) return t; }
-  let best: GNode | null = null, bd = 1e9;
-  for (const t of g.nodes) {
-    if (t.owner !== n.owner || !t.rally || t.id === n.id) continue;
-    const d = corridorPath(g, n.id, t.id) ? dist(n, t) / CFG.corridorSpeed : dist(n, t); // corridors make a rally point "closer"
-    if (d < bd) { bd = d; best = t; }
+/** Seconds until the soonest hostile fleet the player can see reaches this node, or -1. */
+export function incoming(g: Game, n: GNode): number {
+  let best = -1;
+  for (const f of g.fleets) if (f.to === n.id && f.owner !== n.owner && !f.missile && f.drones > 0 && fleetSeen(g, f)) { const t = eta(g, f, n); if (best < 0 || t < best) best = t; }
+  return best;
+}
+export interface RallyLeg { src: GNode; k: number; lane: boolean; secs: number }
+/** The Front a supply node answers to: the nearest one by travel time. */
+function nearestFront(g: Game, src: GNode): number {
+  let best = -1, bt = 1e9;
+  for (const f of g.nodes) {
+    if (f.owner !== src.owner || !f.front) continue;
+    const lane = laneSecs(g, src, f), t = lane >= 0 ? Math.min(lane, dist(src, f) / CFG.fleetSpeed) : dist(src, f) / CFG.fleetSpeed;
+    if (t < bt) { bt = t; best = f.id; }
   }
   return best;
 }
-function rallyTick(g: Game) {
-  // staffing first: a planet short of workers is topped up from the nearest node with Drones to spare
+/** Who would answer a rally at `to`. Normally only the supply nodes for which `to` is the nearest Front, so one
+ *  front cannot starve another. Under attack it is a call for help: every supply node that can arrive in time. */
+export function rallyPlan(g: Game, to: GNode): RallyLeg[] {
+  const inc = incoming(g, to), out: RallyLeg[] = [];
+  for (const src of g.nodes) {
+    if (src.owner !== to.owner || src.id === to.id || src.front) continue;
+    const k = src.drones - floorOf(g, src);
+    if (k < 1) continue;
+    const r = route(g, src, to);
+    if (!r.via) continue;
+    if (inc >= 0) { if (r.secs >= inc) continue; }
+    else if (to.front && nearestFront(g, src) !== to.id) continue;
+    out.push({ src, k, lane: r.via === 'corridor', secs: r.secs });
+  }
+  return out;
+}
+/** One action: mark this node as a Front and call in the spare Drones of its supply nodes, once. */
+export function rally(g: Game, to: GNode): string | null {
+  to.front = true;
+  const plan = rallyPlan(g, to);
+  if (!plan.length) return incoming(g, to) >= 0 ? 'No supply node can get Drones here in time' : 'No supply node has Drones to spare';
+  for (const l of plan) { if (l.lane) convoy(g, l.src, to, l.k, []); else launch(g, l.src, to, l.k, []); }
+  return null;
+}
+/** Planets short of the Drones their mines or lab need are staffed from the nearest node with spare. */
+function staffTick(g: Game) {
   for (const n of g.nodes) {
     if (n.owner !== PLAYER) continue;
     const need = floorOf(g, n) - n.drones - g.fleets.filter(f => f.owner === PLAYER && (f.to === n.id || f.path?.includes(n.id))).reduce((s, f) => s + f.drones, 0);
@@ -512,15 +553,6 @@ function rallyTick(g: Game) {
     const src = g.nodes.filter(o => o.owner === PLAYER && o.id !== n.id && o.drones - floorOf(g, o) >= need && (corridorPath(g, o.id, n.id) || slotsFree(g, o) > 0)).sort((a, b) => dist(a, n) - dist(b, n))[0];
     if (!src) continue;
     if (corridorPath(g, src.id, n.id)) convoy(g, src, n, need, []); else launch(g, src, n, need, []);
-  }
-  for (const n of g.nodes) {
-    if (n.owner !== PLAYER || n.rally) continue;
-    const spare = n.drones - floorOf(g, n);
-    if (spare < CFG.rallyBatch) continue;
-    const t = rallyTarget(g, n);
-    if (!t) continue;
-    if (corridorPath(g, n.id, t.id)) convoy(g, n, t, spare, []);
-    else if (slotsFree(g, n) > 0) launch(g, n, t, spare, []);
   }
 }
 
@@ -551,10 +583,16 @@ export function offerRelic(g: Game, rarity: string, nodeId: number) {
   if (!opts.length) { g.sides[PLAYER].ult += 30; return; }
   g.pending.push({ kind: 'relic', node: nodeId, opts, title: 'Choose a relic' });
 }
+/** A prerequisite that is half of a doctrine pair is met by either half. */
+export function preMet(have: string[], id: string): boolean {
+  const pre = TECHS[id].pre;
+  if (!pre) return true;
+  return have.includes(pre) || (!!TECHS[pre].excl && have.includes(TECHS[pre].excl!));
+}
 /** Technologies on the frontier of the tree: prerequisite known, not locked out by a doctrine choice. */
 export function techFrontier(g: Game, owner: number): string[] {
   const have = g.sides[owner].techs;
-  return Object.keys(TECHS).filter(id => !have.includes(id) && (!TECHS[id].pre || have.includes(TECHS[id].pre!)) && !(TECHS[id].excl && have.includes(TECHS[id].excl!)));
+  return Object.keys(TECHS).filter(id => !have.includes(id) && preMet(have, id) && !(TECHS[id].excl && have.includes(TECHS[id].excl!)));
 }
 export const rpCost = (g: Game, owner: number) => CFG.rpBase + CFG.rpStep * g.sides[owner].techs.length;
 export function offerTech(g: Game): boolean {
@@ -678,9 +716,9 @@ export function coreStep(g: Game) {
     else if (n.shields > mx && !(m.capHold)) n.shields = Math.max(mx, n.shields - dt / 10);
     if (!side) continue;
     if (n.task) { n.task.left -= dt * (1 + (m.build || 0)); if (n.task.left <= 0) { const t = n.task; n.task = null; completeTask(g, n, t); } }
-    if (n.kind === 'station' && side.produce && canProduce(side)) {
+    if ((n.kind === 'station' || n.spec === 'foundry') && side.produce && canProduce(side)) {
       n.prod += dt;
-      if (n.prod >= prodSecs(g, n, m)) { n.prod = 0; n.drones++; side.net -= CFG.upkeepDrone; side.upk += CFG.upkeepDrone; if (n.owner === PLAYER) g.stats.dronesMade++; }
+      if (n.prod >= (n.kind === 'station' ? prodSecs(g, n, m) : CFG.foundrySecs)) { n.prod = 0; n.drones++; side.net -= CFG.upkeepDrone; side.upk += CFG.upkeepDrone; if (n.owner === PLAYER) g.stats.dronesMade++; }
     }
     if (n.hold && g.t >= n.hold.until) {
       const h = n.hold; n.hold = null;
@@ -710,7 +748,7 @@ export function coreStep(g: Game) {
     if (d <= step) arrive(g, f);
     else { f.x += ((to.x - f.x) / d) * step; f.y += ((to.y - f.y) / d) * step; }
   }
-  if (g.tick % 20 === 0) rallyTick(g);
+  if (g.tick % 20 === 0) staffTick(g);
 
   const cmd = g.specs[g.cmdSpec];
   if (cmd) {

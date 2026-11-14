@@ -14,7 +14,7 @@ export interface GNode {
   drones: number; shields: number;
   lv: number; // planets: mine level; stations: barracks level (1..3)
   sh: number; // shield level (0..3)
-  spec: string; // specialty: '' | refinery | lab | supply | silo | depot | bay
+  spec: string; // specialty: '' | refinery | lab | foundry | silo | post | bay
   task: Task | null; // one upgrade at a time
   prod: number; // seconds of progress toward the next Drone (stations)
   missile: number; // missiles ready (silo)
@@ -23,7 +23,7 @@ export interface GNode {
   buffs: Buff[];
   event: string | null; offer: boolean; hold: Hold | null;
   floor: number; // Drones the player wants kept here when rallying
-  rally: boolean; rallyTo: number; // rally point flag; preferred rally point (-1 = nearest)
+  front: boolean; // front-line nodes never send their Drones away when you rally; supply nodes do
   capital: boolean; citadel: boolean; home: boolean;
 }
 

@@ -185,8 +185,9 @@ R('academy', 'War Academy', 'rare', 'New recruits arrive already upgraded.', { r
 R('college', 'Staff College', 'rare', 'Every specialist has +1 Power.', { powAll: 1 });
 
 // ---------------------------------------------------------------------------------------------
-// Research: one global tree. Each cycle offers three cards from its frontier. Doctrine pairs
-// (excl) lock each other out.
+// Research: one global tree, six tiers deep. Each cycle offers three cards from its frontier.
+// Tiers 3 and 5 are doctrine pairs (excl): choosing one removes the other for the run. A
+// prerequisite that names one half of a pair is met by either half.
 // ---------------------------------------------------------------------------------------------
 export interface TechDef { id: string; name: string; branch: string; tier: number; pre?: string; desc: string; mods: Mods; excl?: string }
 export const TECHS: Record<string, TechDef> = {};
@@ -197,27 +198,42 @@ T('mining', 'Deep Mining', 'Industry', 1, undefined, 'Every planet yields +1 Ult
 T('automation', 'Automation', 'Industry', 2, 'mining', 'Mines and labs run without Drones working them.', { noOps: 1 });
 T('heavy', 'Heavy Industry', 'Industry', 3, 'automation', 'Every upgrade costs 15 less.', { upgCost: 15 }, 'rationing');
 T('rationing', 'Rationing', 'Industry', 3, 'automation', '10 of your Drones cost no upkeep.', { freeDrones: 10 }, 'heavy');
-T('foundries', 'Orbital Foundries', 'Industry', 4, 'automation', 'Stations build each Drone 2 s faster.', { prodSecs: 2 });
+T('foundries', 'Orbital Foundries', 'Industry', 4, 'heavy', 'Stations build each Drone 2 s faster.', { prodSecs: 2 });
+T('megamines', 'Core Tapping', 'Industry', 5, 'foundries', 'Every planet yields +2 Ultanium per minute.', { inc: 2 }, 'conscription');
+T('conscription', 'Conscription', 'Industry', 5, 'foundries', '15 more Drones cost no upkeep.', { freeDrones: 15 }, 'megamines');
+T('arcology', 'Arcologies', 'Industry', 6, 'megamines', '+12 Ultanium per minute.', { income: 12 });
 T('drill', 'Combat Drill', 'Military', 1, undefined, 'All your attacks +1.', { atk: 1 });
 T('harmonics', 'Shield Harmonics', 'Military', 2, 'drill', 'Shields recharge twice as fast.', { regen: 1 });
 T('siege', 'Siege Doctrine', 'Military', 3, 'harmonics', 'All your attacks ignore 2 shield.', { pierce: 2 }, 'depth');
 T('depth', 'Defence in Depth', 'Military', 3, 'harmonics', '+2 defence at every node.', { def: 2 }, 'siege');
-T('veterans', 'Veteran Crews', 'Military', 4, 'harmonics', 'Winning attacks lose 2 fewer Drones.', { surv: 2 });
+T('veterans', 'Veteran Crews', 'Military', 4, 'siege', 'Winning attacks lose 2 fewer Drones.', { surv: 2 });
+T('shock', 'Shock Assault', 'Military', 5, 'veterans', 'All your attacks +2.', { atk: 2 }, 'bulwark');
+T('bulwark', 'Bulwark Fields', 'Military', 5, 'veterans', 'Every shield holds 3 more.', { shield: 3 }, 'shock');
+T('massed', 'Massed Formations', 'Military', 6, 'shock', 'Every fleet gains +1 attack per 4 Drones (up to +3).', { per4: 3 });
 T('engines', 'Improved Engines', 'Logistics', 1, undefined, 'All fleets fly 15% faster.', { speed: 0.15 });
 T('tunnelling', 'Corridor Engineering', 'Logistics', 2, 'engines', 'Corridors cost half and every node holds one more.', { corridorCost: 0.5, corridorMax: 1 });
 T('fold', 'Fold Drive', 'Logistics', 3, 'tunnelling', 'All fleets fly 25% faster.', { speed: 0.25 }, 'transit');
 T('transit', 'Mass Transit', 'Logistics', 3, 'tunnelling', 'Convoys travel twice as fast.', { laneSpeed: 1 }, 'fold');
-T('pads', 'Extra Launch Pads', 'Logistics', 4, 'tunnelling', 'Every node has one more launch slot.', { slotAdd: 1 });
+T('pads', 'Extra Launch Pads', 'Logistics', 4, 'fold', 'Every node has one more launch slot.', { slotAdd: 1 });
+T('carriers', 'Carrier Wings', 'Logistics', 5, 'pads', 'Every node has another launch slot; fleets fly 15% faster.', { slotAdd: 1, speed: 0.15 }, 'network');
+T('network', 'Corridor Network', 'Logistics', 5, 'pads', 'Every node holds two more corridors, and corridors are nearly free.', { corridorMax: 2, corridorCost: 0.25 }, 'carriers');
+T('gates', 'Jump Gates', 'Logistics', 6, 'carriers', 'All fleets fly 40% faster.', { speed: 0.4 });
 T('sigint', 'Signal Analysis', 'Intelligence', 1, undefined, 'Read the strength of every fleet you detect.', { sigint: 1 });
 T('sensors', 'Long-Range Sensors', 'Intelligence', 2, 'sigint', 'All nodes and fleets see 25% further.', { fov: 0.25 });
 T('deepcover', 'Deep Cover', 'Intelligence', 3, 'sensors', 'Offensives are announced with their target; mobilization 15% slower.', { warn: 1, mobSlow: 0.15 }, 'blacksky');
 T('blacksky', 'Black Sky', 'Intelligence', 3, 'sensors', 'All of your fleets fly unseen.', { stealth: 1 }, 'deepcover');
-T('posts', 'Listening Posts', 'Intelligence', 4, 'sensors', 'All nodes see 25% further still.', { fov: 0.25 });
+T('posts', 'Listening Posts', 'Intelligence', 4, 'deepcover', 'All nodes see 25% further still.', { fov: 0.25 });
+T('sabotage', 'Sabotage Cells', 'Intelligence', 5, 'posts', 'Every attack destroys 2 defending Drones before the battle.', { strike: 2 }, 'ciphers');
+T('ciphers', 'Broken Ciphers', 'Intelligence', 5, 'posts', 'Coalition mobilization is 20% slower.', { mobSlow: 0.2 }, 'sabotage');
+T('panopticon', 'Panopticon', 'Intelligence', 6, 'sabotage', 'All nodes and fleets see 50% further; every attack destroys 1 more defender first.', { fov: 0.5, strike: 1 });
 T('academy', 'Officer Academy', 'Command', 1, undefined, 'Specialists cost half upkeep.', { specUpkeep: 0.5 });
 T('protocols', 'Command Protocols', 'Command', 2, 'academy', 'Commander gains 50% more experience; rescue window +45 s.', { xp: 0.5, rescue: 45 });
 T('integration', 'Command Integration', 'Command', 3, 'protocols', 'Nodes and fleets hold one more specialist.', { slots: 1 }, 'scouts');
 T('scouts', 'Talent Scouts', 'Command', 3, 'protocols', 'Every recruitment offers one more specialist.', { offer: 1 }, 'integration');
-T('college', 'War College', 'Command', 4, 'protocols', 'Every specialist has +1 Power.', { powAll: 1 });
+T('college', 'War College', 'Command', 4, 'integration', 'Every specialist has +1 Power.', { powAll: 1 });
+T('veterancy', 'Veterancy', 'Command', 5, 'college', 'New recruits arrive already upgraded.', { recruitUp: 1 }, 'guard');
+T('guard', 'Honour Guard', 'Command', 5, 'college', '+2 defence at every node; rescue window +60 s.', { def: 2, rescue: 60 }, 'veterancy');
+T('legends', 'Living Legends', 'Command', 6, 'veterancy', 'Every specialist has another +1 Power.', { powAll: 1 });
 
 // ---------------------------------------------------------------------------------------------
 // Coalition factions (three per run) and Archons (one per run)
@@ -234,11 +250,11 @@ export const FACTIONS: Record<string, FactionDef> = {
     techs: ['harmonics', 'mining', 'depth', 'automation'], specs: ['sentinel', 'castellan', 'engineer'] },
   crimson: { id: 'crimson', name: 'Crimson Warhost', color: '#d2604a', warlord: 'Warlord Ashka', sig: 'berserker',
     desc: 'Wave aggression. Thin defences, constant pressure.', tell: 'Builds Drones 2 s faster; +1 attack; strikes the nearest target often.',
-    mods: { prodSecs: 2, atk: 1 }, ai: { aggr: 1.4, expand: 110, react: 0.4, target: 'near', shield: 1, planet: 'supply', station: 'bay' },
+    mods: { prodSecs: 2, atk: 1 }, ai: { aggr: 1.4, expand: 110, react: 0.4, target: 'near', shield: 1, planet: 'foundry', station: 'bay' },
     techs: ['drill', 'engines', 'siege', 'veterans'], specs: ['foreman', 'vanguard', 'tactician'] },
   lumen: { id: 'lumen', name: 'Lumen Technocracy', color: '#e3c565', warlord: 'Prime Calculator Ione', sig: 'lens',
     desc: 'Lance batteries thin every attacking fleet before it lands.', tell: 'Lances destroy 2 Drones of every attacking fleet; gains two technologies per stage.',
-    mods: { lance: 2 }, ai: { aggr: 0.8, expand: 170, react: 0.7, target: 'weak', shield: 2, planet: 'refinery', station: 'depot' },
+    mods: { lance: 2 }, ai: { aggr: 0.8, expand: 170, react: 0.7, target: 'weak', shield: 2, planet: 'refinery', station: 'post' },
     techs: ['sigint', 'harmonics', 'drill', 'engines', 'siege', 'mining', 'veterans', 'sensors'], specs: ['scientist', 'sentinel', 'scout'] },
   veil: { id: 'veil', name: 'Veil Syndicate', color: '#9a7cc4', warlord: 'The Whisper', sig: 'phantom',
     desc: 'Unseen fleets that hunt your specialists.', tell: 'Fleets are invisible until inside full-intelligence range; targets nodes holding specialists.',
@@ -246,7 +262,7 @@ export const FACTIONS: Record<string, FactionDef> = {
     techs: ['engines', 'drill', 'sigint', 'veterans'], specs: ['saboteur', 'ghost', 'pirate'] },
   drift: { id: 'drift', name: 'Drift Clans', color: '#6ea6d6', warlord: 'Clanmother Sura', sig: 'wayfinder',
     desc: 'Fast nomads who swallow neutral space.', tell: 'Fleets fly 40% faster; expands into neutral territory twice as often.',
-    mods: { speed: 0.4 }, ai: { aggr: 1.1, expand: 70, react: 0.8, target: 'near', shield: 1, planet: 'supply', station: 'depot' },
+    mods: { speed: 0.4 }, ai: { aggr: 1.1, expand: 70, react: 0.8, target: 'near', shield: 1, planet: 'foundry', station: 'post' },
     techs: ['engines', 'sensors', 'drill', 'mining'], specs: ['admiral', 'navigator', 'warden'] },
 };
 

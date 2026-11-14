@@ -6,7 +6,7 @@ import { sideMods } from './mods';
 import { rnd, rr, ri } from './rng';
 import { dist, log, sideName, canUp, startUp, launch, calcBattle, eta, grantTech, slotsFree, addSpec, fleetMods, fireMissile, canMissile } from './core';
 
-const ARCHON_AI: FactionDef['ai'] = { aggr: 1, expand: 1e9, react: 0.9, target: 'weak', shield: 3, planet: 'refinery', station: 'depot' };
+const ARCHON_AI: FactionDef['ai'] = { aggr: 1, expand: 1e9, react: 0.9, target: 'weak', shield: 3, planet: 'refinery', station: 'post' };
 const aiOf = (g: Game, o: number) => (g.sides[o].kind === 'faction' ? FACTIONS[g.sides[o].fac].ai : ARCHON_AI);
 const strength = (g: Game, n: GNode) => calcBattle(g, 0, 0, [], n, {}).def;
 

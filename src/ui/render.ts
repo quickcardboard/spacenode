@@ -18,6 +18,8 @@ export interface RenderUi {
 }
 /** Screen positions of every visible specialist statue, refreshed each frame (for tooltips). */
 export const spots: { x: number; y: number; r: number; spec: number }[] = [];
+/** Screen positions of the Rally flags on your Front nodes, refreshed each frame: tap one to rally there. */
+export const flags: { x: number; y: number; r: number; node: number }[] = [];
 
 const PITCH = (52 * Math.PI) / 180, FOV = 30;
 export const TILT = Math.sin(PITCH); // ground foreshortening, used by input for panning
@@ -33,7 +35,7 @@ const TERRAIN = [
   ['#cc9379', '#a56e58', '#e3b7a2'], ['#cfdcdf', '#a2b5ba', '#eef5f5'],
 ];
 const BCOL: Record<string, string> = {
-  mine: '#a8835a', barracks: '#dd7a63', shield: '#bfe3ff', refinery: '#e3c565', lab: '#7fb2dc', supply: '#9fd0a8', silo: '#d98a8a', depot: '#b8ad96', bay: '#e3c565',
+  mine: '#a8835a', barracks: '#dd7a63', shield: '#bfe3ff', refinery: '#e3c565', lab: '#7fb2dc', foundry: '#dd9a7a', silo: '#d98a8a', post: '#c9b3e6', bay: '#e3c565',
 };
 
 export function known(g: Game, n: GNode): { tier: 'live' | 'stale' | 'detected' | 'hidden'; owner: number; drones: number } {
@@ -204,10 +206,12 @@ function building(id: string, fade: number, lit = false): THREE.Group {
     b.add(mesh(new THREE.CylinderGeometry(0.6, 0.7, 2.2, 6), lam(col, fade), 0, 1.1), mesh(new THREE.SphereGeometry(0.7, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), lam(PAPER, fade), 0, 2.2));
     if (lit) { const o = mesh(new THREE.OctahedronGeometry(0.45), flat('#9fe0ff'), 0, 3.3); o.name = 'orb'; b.add(o); }
   }
-  else if (id === 'supply') { b.add(mesh(new THREE.CylinderGeometry(1.1, 1.1, 0.5, 8), lam(col, fade), 0, 0.25), mesh(new THREE.SphereGeometry(0.95, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), lam(PAPER, fade), 0, 0.5), mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), lam(col, fade), 1.3, 0.25)); }
+  else if (id === 'foundry') { b.add(mesh(new THREE.BoxGeometry(1.7, 1.0, 1.2), lam(col, fade), 0, 0.5), mesh(new THREE.ConeGeometry(0.8, 0.6, 4), lam('#b05a47', fade), 0, 1.3), mesh(new THREE.CylinderGeometry(0.22, 0.22, 1.3, 6), lam(dark, fade), 0.6, 1.5)); (b.children[1] as THREE.Mesh).rotation.y = Math.PI / 4; }
+  else if (id === 'unused1') { b.add(mesh(new THREE.CylinderGeometry(1.1, 1.1, 0.5, 8), lam(col, fade), 0, 0.25), mesh(new THREE.SphereGeometry(0.95, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), lam(PAPER, fade), 0, 0.5), mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), lam(col, fade), 1.3, 0.25)); }
   else if (id === 'barracks') { b.add(mesh(new THREE.BoxGeometry(1.5, 0.9, 1.0), lam(col, fade), 0, 0.45), mesh(new THREE.ConeGeometry(0.72, 0.6, 4), lam('#b05a47', fade), 0, 1.2)); (b.children[1] as THREE.Mesh).rotation.y = Math.PI / 4; }
   else if (id === 'silo') { b.add(mesh(new THREE.CylinderGeometry(0.75, 0.85, 1.6, 8), lam('#6d7385', fade), 0, 0.8)); if (lit) b.add(mesh(new THREE.CylinderGeometry(0.32, 0.32, 1.6, 6), lam(PAPER, fade), 0, 2.2), mesh(new THREE.ConeGeometry(0.34, 0.8, 6), lam('#d2604a', fade), 0, 3.4)); else b.add(mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.15, 8), lam(dark, fade), 0, 1.65)); }
-  else if (id === 'depot') { for (const [x, y, z] of [[-0.55, 0.4, 0], [0.55, 0.4, 0], [0, 1.2, 0], [0, 0.4, 0.9]]) b.add(mesh(new THREE.BoxGeometry(0.95, 0.8, 0.8), lam(col, fade), x, y, z)); }
+  else if (id === 'post') { b.add(mesh(new THREE.CylinderGeometry(0.9, 1.0, 0.9, 6), lam(col, fade), 0, 0.45), mesh(new THREE.CylinderGeometry(0.12, 0.12, 2.0, 4), lam(PAPER, fade), 0, 1.9), mesh(new THREE.BoxGeometry(0.9, 0.5, 0.06), lam(col, fade), 0.5, 2.6)); }
+  else if (id === 'unused2') { for (const [x, y, z] of [[-0.55, 0.4, 0], [0.55, 0.4, 0], [0, 1.2, 0], [0, 0.4, 0.9]]) b.add(mesh(new THREE.BoxGeometry(0.95, 0.8, 0.8), lam(col, fade), x, y, z)); }
   else if (id === 'bay') { for (const x of [-0.9, 0.9]) b.add(mesh(new THREE.BoxGeometry(0.22, 2.2, 0.22), lam(col, fade), x, 1.1)); b.add(mesh(new THREE.BoxGeometry(2.1, 0.24, 0.32), lam(col, fade), 0, 2.2), mesh(new THREE.BoxGeometry(1.4, 0.1, 1.4), lam(dark, fade), 0, 0.05)); }
   return b;
 }
@@ -339,9 +343,9 @@ function icon(c: CanvasRenderingContext2D, id: string, x: number, y: number) {
     case 'shield': c.moveTo(0, -6); c.lineTo(5, -4); c.lineTo(4, 2); c.lineTo(0, 6); c.lineTo(-4, 2); c.lineTo(-5, -4); c.closePath(); c.fill(); break;
     case 'refinery': c.moveTo(1, -6); c.lineTo(-4, 1); c.lineTo(0, 1); c.lineTo(-1, 6); c.lineTo(4, -1); c.lineTo(0, -1); c.closePath(); c.fill(); break;
     case 'lab': c.moveTo(-2, -6); c.lineTo(2, -6); c.moveTo(-1.5, -6); c.lineTo(-1.5, -1); c.lineTo(-5, 5); c.lineTo(5, 5); c.lineTo(1.5, -1); c.lineTo(1.5, -6); c.stroke(); c.beginPath(); c.moveTo(-3.5, 2.5); c.lineTo(3.5, 2.5); c.lineTo(5, 5); c.lineTo(-5, 5); c.fill(); break;
-    case 'supply': c.arc(0, 2, 5, Math.PI, 0); c.lineTo(5, 4); c.lineTo(-5, 4); c.closePath(); c.fill(); break;
+    case 'foundry': c.moveTo(-6, 5); c.lineTo(-6, -1); c.lineTo(-2, 2); c.lineTo(-2, -1); c.lineTo(2, 2); c.lineTo(2, -5); c.lineTo(5, -5); c.lineTo(5, 5); c.closePath(); c.fill(); break;
     case 'silo': c.moveTo(0, -7); c.lineTo(3, -2); c.lineTo(3, 4); c.lineTo(5, 6); c.lineTo(-5, 6); c.lineTo(-3, 4); c.lineTo(-3, -2); c.closePath(); c.fill(); break;
-    case 'depot': c.rect(-6, -1, 5.5, 6); c.rect(0.5, -1, 5.5, 6); c.rect(-3, -6.5, 5.5, 5); c.fill(); break;
+    case 'post': c.moveTo(-4, 6); c.lineTo(-4, -6); c.stroke(); c.beginPath(); c.moveTo(-3, -6); c.lineTo(6, -3); c.lineTo(-3, 0); c.closePath(); c.fill(); break;
     case 'bay': c.moveTo(6, 0); c.lineTo(-4, -5); c.lineTo(-2, 0); c.lineTo(-4, 5); c.closePath(); c.fill(); break;
   }
   c.restore();
@@ -367,7 +371,7 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
   camera.lookAt(cam.x, 0, cam.y);
   camera.updateMatrixWorld();
   if (now - fogT > 350) { fogT = now; paintGround(g, now); }
-  spots.length = 0;
+  spots.length = 0; flags.length = 0;
 
   // --- nodes: rebuild a model only when what the player can see of it changes
   for (const n of g.nodes) {
@@ -492,7 +496,13 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
       flag(ctx, top.x, top.y + 2, col, glyph + (stale ? '~' : '') + k.drones, n.home || n.capital || n.citadel, stale, now, n.id);
       let tx = gp.x + pr * 1.7 + 8; const ty = toScreen(n.x, n.y, bodyMid(n)).y;
       const tag = (t: string, bg: string) => { ctx.fillStyle = bg; ctx.beginPath(); ctx.roundRect(tx - 8, ty - 8, 16, 16, 4); ctx.fill(); ctx.fillStyle = INK; ctx.font = '800 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(t, tx, ty + 0.5); tx += 19; };
-      if (n.owner === PLAYER && n.rally) tag('⚑', '#6cc5a0');
+      if (n.owner === PLAYER && n.front) { // a Front shows a Rally button right on the map
+        const bx = tx - 8, bw = 58;
+        ctx.fillStyle = '#e8a85a'; ctx.beginPath(); ctx.roundRect(bx, ty - 11, bw, 22, 7); ctx.fill();
+        ctx.fillStyle = INK; ctx.font = '800 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('⚑ RALLY', bx + bw / 2, ty + 0.5);
+        flags.push({ x: bx + bw / 2, y: ty, r: 30, node: n.id });
+        tx += bw + 6;
+      }
       if (n.event) tag('!', GOLD);
       if (n.offer && n.owner !== PLAYER) tag('☺', '#e9a9c9');
       if (n.hold) tag('◷', '#a9dcec');

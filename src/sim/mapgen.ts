@@ -72,23 +72,24 @@ export function newGame(seed: number, threat = 0): Game {
     const n: GNode = {
       id, name: name(), kind: 'planet', x: p.x, y: p.y, size: 0, owner: p.region, region: p.region, threat: th,
       drones: 0, shields: 0, lv: 1, sh: 0, spec: '', task: null, prod: 0, missile: 0,
-      specs: [], prisoners: [], buffs: [], event: null, offer: false, hold: null, floor: 0, rally: false, rallyTo: -1,
+      specs: [], prisoners: [], buffs: [], event: null, offer: false, hold: null, floor: 0, front: false,
       capital: false, citadel: false, home: false,
     };
     const roll = rnd(g);
     n.size = roll < 0.35 ? 0 : roll < 0.8 ? 1 : 2;
     const fd = g.sides[p.region]?.kind === 'faction' ? FACTIONS[g.sides[p.region].fac] : null;
     if (p === home) { n.kind = 'station'; n.home = true; n.drones = CFG.startDrones; n.name = 'Haven'; n.sh = 1; }
-    else if (p === cit) { n.kind = 'station'; n.citadel = true; n.name = 'The Citadel'; n.drones = Math.round(16 * hard); n.lv = 3; n.sh = 3; n.spec = 'depot'; }
+    else if (p === cit) { n.kind = 'station'; n.citadel = true; n.name = 'The Citadel'; n.drones = Math.round(16 * hard); n.lv = 3; n.sh = 3; n.spec = 'post'; }
     else if (p.region === 0) {
       const rank = byHome.indexOf(p);
-      n.owner = 0; n.offer = true;
+      n.owner = 0;
       n.kind = rank < 2 ? 'planet' : rank === 2 ? 'station' : rnd(g) < 0.58 ? 'planet' : 'station';
       if (rank === 0) n.size = 0; if (rank === 1) n.size = 1;
       const near = rank <= 2 || dist(p, home) < 70;
       n.drones = near ? ri(g, 0, 1) : Math.round((th * 8 * rr(g, 0.6, 1.3) + 1) * hard);
       n.sh = n.kind === 'planet' ? CFG.neutralShield[n.size] : 1;
-      if (rank > 1 && (n.kind === 'station' ? rnd(g) < 0.7 : rnd(g) < 0.3)) n.event = nextEvent(n.kind);
+      n.offer = n.kind === 'planet' || rnd(g) < 0.5; // every neutral planet and about half the neutral stations hold recruits
+      if (rank > 1 && (n.kind === 'station' ? rnd(g) < 0.85 : rnd(g) < 0.25)) n.event = nextEvent(n.kind);
     } else {
       const capital = capitals.includes(p);
       n.capital = capital;

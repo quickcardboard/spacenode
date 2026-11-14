@@ -6,11 +6,11 @@ import { PLAYER, type Game, type GNode } from '../src/sim/types';
 import { calcBattle, dist, viewOf, canTarget, slotsFree, floorOf, canUp, canCorridor, corridorPath, totalDrones, crewMax } from '../src/sim/core';
 
 function upgrades(g: Game, own: GNode[]) {
-  const labs = own.filter(n => n.spec === 'lab').length, supply = own.filter(n => n.spec === 'supply').length;
+  const labs = own.filter(n => n.spec === 'lab').length, supply = own.filter(n => n.spec === 'foundry').length;
   for (const n of own) {
     if (n.task) continue;
     if (n.event && !g.pending.length) exec(g, { c: 'event', node: n.id });
-    const want = n.kind === 'planet' ? (labs < 2 ? 'lab' : supply < 2 ? 'supply' : 'refinery') : (own.some(o => o.spec === 'bay') ? 'depot' : 'bay');
+    const want = n.kind === 'planet' ? (labs < 2 ? 'lab' : supply < 2 ? 'foundry' : 'refinery') : (own.some(o => o.spec === 'bay') ? 'post' : 'bay');
     if (!n.spec && !canUp(g, n, 'spec', want)) { exec(g, { c: 'up', node: n.id, what: 'spec', id: want }); continue; }
     if (!canUp(g, n, 'lv')) { exec(g, { c: 'up', node: n.id, what: 'lv' }); continue; }
     if (g.sides[PLAYER].ult > 80 && !canUp(g, n, 'sh')) exec(g, { c: 'up', node: n.id, what: 'sh' });
@@ -25,8 +25,9 @@ function act(g: Game) {
   // the army gathers where the Commander is
   const cnt = (n: GNode) => n.specs.filter(i => i !== g.cmdSpec).length;
   const base = own.slice().sort((a, b) => cnt(b) - cnt(a) || b.drones - a.drones)[0];
-  for (const n of own) if (n.rally !== (n.id === base.id)) exec(g, { c: 'rally', node: n.id });
+  for (const n of own) if (n.front !== (n.id === base.id)) exec(g, { c: 'front', node: n.id });
   const hf = 1 + 2 * g.mob.stage; if (g.nodes[g.home].owner === PLAYER && g.nodes[g.home].floor !== hf) exec(g, { c: 'floor', node: g.home, v: hf });
+  if (g.tick % 60 === 0) exec(g, { c: 'rally', node: base.id });
   // bring stray specialists to the army
   for (const sp of g.specs) if (sp.owner === PLAYER && !sp.cmd && !sp.held && sp.node >= 0 && sp.node !== base.id && cnt(base) < 3) exec(g, { c: 'move', spec: sp.id, to: base.id });
   // corridors toward the base

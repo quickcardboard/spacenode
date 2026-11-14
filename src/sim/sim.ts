@@ -1,6 +1,6 @@
 import type { Game } from './types';
 import { PLAYER } from './types';
-import { coreStep, startUp, cancelTask, startCorridor, launch, convoy, moveSpec, fireMissile, choose, ransom, promote, type UpKind } from './core';
+import { coreStep, startUp, cancelTask, startCorridor, launch, convoy, moveSpec, fireMissile, choose, ransom, promote, rally, type UpKind } from './core';
 import { aiTick } from './ai';
 import { EVENTS } from './content';
 
@@ -21,7 +21,7 @@ export type Cmd =
   | { c: 'move'; spec: number; to: number }
   | { c: 'missile'; from: number; to: number }
   | { c: 'rally'; node: number }
-  | { c: 'rallyTo'; node: number; to: number }
+  | { c: 'front'; node: number }
   | { c: 'floor'; node: number; v: number }
   | { c: 'produce' }
   | { c: 'promote'; spec: number }
@@ -42,8 +42,8 @@ export function exec(g: Game, c: Cmd): string | null {
     case 'convoy': { const n = own(c.from); return n && g.nodes[c.to] ? convoy(g, n, g.nodes[c.to], c.drones, c.specs) : 'Not your node'; }
     case 'move': { const sp = mine(c.spec); return sp && g.nodes[c.to] ? moveSpec(g, sp, g.nodes[c.to]) : 'Not your specialist'; }
     case 'missile': { const n = own(c.from); return n && g.nodes[c.to] ? fireMissile(g, n, g.nodes[c.to]) : 'Not your node'; }
-    case 'rally': { const n = own(c.node); if (!n) return 'Not your node'; n.rally = !n.rally; if (n.rally) n.rallyTo = -1; return null; }
-    case 'rallyTo': { const n = own(c.node); if (!n) return 'Not your node'; if (c.to >= 0 && !(own(c.to)?.rally)) return 'Pick one of your rally points'; n.rallyTo = c.to; return null; }
+    case 'rally': { const n = own(c.node); return n ? rally(g, n) : 'Not your node'; }
+    case 'front': { const n = own(c.node); if (!n) return 'Not your node'; n.front = !n.front; return null; }
     case 'floor': { const n = own(c.node); if (!n) return 'Not your node'; n.floor = Math.max(0, Math.min(99, Math.round(c.v))); return null; }
     case 'produce': g.sides[PLAYER].produce = !g.sides[PLAYER].produce; return null;
     case 'promote': { const sp = mine(c.spec); return sp ? promote(g, sp) : 'Not your specialist'; }

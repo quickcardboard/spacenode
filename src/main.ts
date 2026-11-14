@@ -6,18 +6,18 @@ import { PLAYER } from './sim/types';
 import { CFG } from './sim/config';
 import { newGame } from './sim/mapgen';
 import { step, exec, type Cmd } from './sim/sim';
-import { canTarget, fleetSeen, updateVision, corridorReach, canCorridor, canMissile, slotsFree, floorOf, crewMax, moveEta, activeSpecs, corridorPath } from './sim/core';
-import { draw, nodeR, known, toScreen, nodeScreen, spots, TILT, type Cam } from './ui/render';
+import { canTarget, fleetSeen, updateVision, canCorridor, route, canMissile, slotsFree, floorOf, crewMax, moveEta, activeSpecs, corridorPath } from './sim/core';
+import { draw, nodeR, known, toScreen, nodeScreen, spots, flags, TILT, type Cam } from './ui/render';
 import { hud, roster, panel, menu, modal, title, help, launchPreview, minToWin, specTip, token, fmtT, type App } from './ui/ui';
 
-const SAVE = 'spacenodes.save.v3', META = 'spacenodes.meta.v1';
+const SAVE = 'spacenodes.save.v4', META = 'spacenodes.meta.v1';
 const $ = (id: string) => document.getElementById(id)!;
 const canvas = $('map') as HTMLCanvasElement, ctx = canvas.getContext('2d')!;
 const elHud = $('hud'), elRoster = $('roster'), elPanel = $('panel'), elOverlay = $('overlay'), elToasts = $('toasts'), elTip = $('tip'), elGhost = $('ghost');
 const store = { get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } }, del: (k: string) => { try { localStorage.removeItem(k); } catch { /* storage unavailable */ } } };
 
 const app: App = {
-  g: null, speed: 1, paused: false, sel: null, menu: null, mode: null, launch: null, drag: null,
+  g: null, speed: 1, paused: false, sel: null, menu: null, mode: null, launch: null, drag: null, pickSpec: -1,
   screen: 'title', newThreat: 0, meta: { runs: 0, wins: 0, unlocked: 0, best: 0, ...JSON.parse(store.get(META) || '{}') },
   hasSave: !!store.get(SAVE),
 };
@@ -48,14 +48,17 @@ function focus(id: number) {
   const n = app.g!.nodes[id], mobile = W < 820, open = !!app.sel || !!app.launch;
   camTo = { x: n.x + (!mobile && open ? 190 / cam.z : 0), y: n.y + (mobile && open ? (H * 0.22) / (cam.z * TILT) : 0) };
 }
-function select(type: 'node' | 'fleet', id: number) { app.sel = { type, id }; app.launch = null; dirty = true; if (type === 'node') focus(id); }
+function select(type: 'node' | 'fleet', id: number) { app.sel = { type, id }; app.launch = null; app.pickSpec = -1; dirty = true; if (type === 'node') focus(id); }
 
 function openLaunch(fromId: number, toId: number, lane: boolean) {
   const g = app.g!, from = g.nodes[fromId], to = g.nodes[toId];
   if (from.owner !== PLAYER) return note('Not your node');
   if (fromId === toId) return note('Pick a different node');
-  if (lane) { if (!corridorPath(g, fromId, toId)) return note('No corridor route to that node'); }
-  else { if (to.owner !== PLAYER && !canTarget(g, to)) return note('Target is not in detection range'); if (slotsFree(g, from) < 1) return note('No free launch slot there'); }
+  if (lane) { const r = route(g, from, to); if (!r.via) return note(`${from.name} has no fleet ready and no corridor to ${to.name}`); lane = r.via === 'corridor'; } // friendly move: corridor or flight, whichever is quicker
+  if (!lane) {
+    if (to.owner !== PLAYER && !canTarget(g, to)) return note('Target is not in detection range');
+    if (slotsFree(g, from) < 1) return note(`${from.name} has no fleet ready: its launch slots are all away`);
+  }
   const L = { from: fromId, to: toId, drones: 0, specs: [] as number[], lane };
   const spare = Math.max(0, from.drones - floorOf(g, from));
   if (to.owner === PLAYER) L.drones = spare;
@@ -73,7 +76,7 @@ function openLaunch(fromId: number, toId: number, lane: boolean) {
 function act(a: string) {
   const [name, ...args] = a.split(':');
   const g = app.g, sel = app.sel?.type === 'node' ? app.sel.id : -1;
-  const mode = (k: NonNullable<App['mode']>['k']) => { app.mode = { k, from: sel }; app.sel = null; app.launch = null; };
+  const mode = (k: NonNullable<App['mode']>['k']) => { app.mode = { k, from: sel }; app.sel = null; app.launch = null; app.pickSpec = -1; };
   switch (name) {
     case 'newrun': case 'again': startRun(newGame((Date.now() % 2147483647) | 0, app.newThreat)); break;
     case 'continue': { const raw = store.get(SAVE); if (raw) { try { const s = JSON.parse(raw) as Game; updateVision(s); startRun(s); } catch { store.del(SAVE); app.hasSave = false; } } break; }
@@ -98,13 +101,12 @@ function act(a: string) {
     case 'produce': run({ c: 'produce' }); break;
     case 'promote': run({ c: 'promote', spec: +args[0] }); break;
     case 'rally': run({ c: 'rally', node: sel }); break;
+    case 'front': if (g!.nodes[sel].front !== (args[0] === '1')) run({ c: 'front', node: sel }); break;
+    case 'pickspec': app.pickSpec = app.pickSpec === sel ? -1 : sel; break;
     case 'floor': run({ c: 'floor', node: sel, v: floorOf(g!, g!.nodes[sel]) + +args[0] }); break;
-    case 'send': mode('launch'); break; // the panel gets out of the way so the whole map is visible for targeting
-    case 'convoy': mode('convoy'); break;
     case 'corridorpick': mode('corridor'); break;
     case 'missile': mode('missile'); break;
-    case 'rallyto': mode('rallyTo'); break;
-    case 'from': openLaunch(+args[0], sel, false); break;
+    case 'noop': break;
     case 'missilefrom': run({ c: 'missile', from: +args[0], to: sel }); break;
     case 'lspec': {
       const L = app.launch!, id = +args[0];
@@ -169,7 +171,7 @@ function showTip(spec: number, x: number, y: number) {
 function hideTip() { if (tipFor >= 0) { elTip.className = ''; tipFor = -1; } }
 const tipTarget = (t: EventTarget | null) => (t instanceof HTMLElement ? (t.closest('[data-tip]') as HTMLElement | null) : null);
 document.addEventListener('pointerover', e => { // hover (mouse)
-  if (e.pointerType !== 'mouse' || e.target === canvas) return;
+  if (e.pointerType !== 'mouse' || e.target === canvas || rosterDown || ndrag) return;
   const el = tipTarget(e.target);
   if (el) { const r = el.getBoundingClientRect(); showTip(+el.dataset.tip!, r.left + r.width / 2, r.top); } else hideTip();
 });
@@ -181,7 +183,9 @@ document.addEventListener('pointerdown', e => { // long press (touch)
   pressT = window.setTimeout(() => { if (!app.drag && Math.hypot(lastPtr.x - x0, lastPtr.y - y0) < 10) { const r = el.getBoundingClientRect(); showTip(+el.dataset.tip!, r.left + r.width / 2, r.top); tipHeld = true; } }, 420);
 });
 const lastPtr = { x: 0, y: 0 };
-document.addEventListener('pointermove', e => { lastPtr.x = e.clientX; lastPtr.y = e.clientY; });
+let mouseIn = false, overMap = false;
+document.addEventListener('pointermove', e => { lastPtr.x = e.clientX; lastPtr.y = e.clientY; mouseIn = e.pointerType === 'mouse'; overMap = e.target === canvas; });
+document.documentElement.addEventListener('mouseleave', () => { mouseIn = false; });
 document.addEventListener('pointerup', () => clearTimeout(pressT));
 function spotAt(px: number, py: number) {
   let best = null as null | (typeof spots)[number], bd = 1e9;
@@ -200,7 +204,7 @@ elRoster.addEventListener('pointerdown', e => {
 elRoster.addEventListener('pointermove', e => {
   if (!rosterDown || !app.g) return;
   const g = app.g, sp = g.specs[rosterDown.spec];
-  if (!app.drag && Math.hypot(e.clientX - rosterDown.x, e.clientY - rosterDown.y) > 10) { app.drag = { spec: sp.id, x: e.clientX, y: e.clientY, over: -1, label: '', ok: false }; hideTip(); clearTimeout(pressT); dirty = true; }
+  if (!app.drag && Math.hypot(e.clientX - rosterDown.x, e.clientY - rosterDown.y) > 10) { app.drag = { spec: sp.id, x: e.clientX, y: e.clientY, over: -1, label: '', ok: false }; scrollArmed = false; hideTip(); clearTimeout(pressT); dirty = true; }
   if (!app.drag) return;
   const d = app.drag;
   d.x = e.clientX; d.y = e.clientY;
@@ -218,6 +222,8 @@ const rosterUp = (e: PointerEvent) => {
   if (!rosterDown || !app.g) return;
   const g = app.g, sp = g.specs[rosterDown.spec], d = app.drag;
   rosterDown = null; app.drag = null; elGhost.className = '';
+  clearTimeout(pressT);
+  if (d) { hideTip(); tipHeld = false; } // a drag never leaves a tooltip behind
   if (d) {
     const under = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
     if (under?.closest('[data-drop="crew"]') && app.launch) { if (d.ok && !app.launch.specs.includes(sp.id)) act(`lspec:${sp.id}`); }
@@ -232,6 +238,9 @@ const rosterUp = (e: PointerEvent) => {
 elRoster.addEventListener('pointerup', rosterUp); elRoster.addEventListener('pointercancel', rosterUp);
 
 // ------------------------------------------------------------------ map input
+/** Dragging from one of your nodes onto another node: the one gesture for attack, reinforce and corridor travel. */
+let nodeDown = -1, ndrag: { from: number; over: number } | null = null;
+let scrollArmed = false, edgeSince = 0;
 const ptrs = new Map<number, { x: number; y: number }>();
 let downAt: { x: number; y: number } | null = null, moved = false, pinch = 0, longPressed = false, mapPress = 0;
 const toWorld = (px: number, py: number) => ({ x: (px - W / 2) / cam.z + cam.x, y: (py - H / 2) / (cam.z * TILT) + cam.y });
@@ -253,15 +262,14 @@ function pick(px: number, py: number): { type: 'node' | 'fleet'; id: number } | 
   return best >= 0 ? { type: 'node', id: best } : null;
 }
 function tap(px: number, py: number) {
-  const g = app.g!, hit = pick(px, py);
+  const g = app.g!;
+  if (!app.mode) for (const f of flags) if (Math.abs(f.x - px) < f.r && Math.abs(f.y - py) < 13) { run({ c: 'rally', node: f.node }); return; }
+  const hit = pick(px, py);
   if (app.mode) {
     if (!hit || hit.type !== 'node') return;
     const m = app.mode, back = () => { app.mode = null; app.sel = { type: 'node', id: m.from }; };
-    if (m.k === 'launch') openLaunch(m.from, hit.id, false);
-    else if (m.k === 'convoy') openLaunch(m.from, hit.id, true);
-    else if (m.k === 'corridor') { if (run({ c: 'corridor', from: m.from, to: hit.id })) back(); }
-    else if (m.k === 'missile') { if (run({ c: 'missile', from: m.from, to: hit.id })) back(); }
-    else if (m.k === 'rallyTo') { if (run({ c: 'rallyTo', node: m.from, to: hit.id })) back(); }
+    if (m.k === 'corridor') { if (run({ c: 'corridor', from: m.from, to: hit.id })) back(); }
+    else if (run({ c: 'missile', from: m.from, to: hit.id })) back();
     dirty = true;
     return;
   }
@@ -273,8 +281,11 @@ canvas.addEventListener('pointerdown', e => {
   canvas.setPointerCapture(e.pointerId);
   hideTip(); longPressed = false; clearTimeout(mapPress);
   ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (ptrs.size === 1) { downAt = { x: e.clientX, y: e.clientY }; moved = false; }
-  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = Math.hypot(a.x - b.x, a.y - b.y); moved = true; }
+  if (ptrs.size === 1) {
+    downAt = { x: e.clientX, y: e.clientY }; moved = false; nodeDown = -1;
+    if (app.g && app.screen === 'game' && !app.mode) { const h = pick(e.clientX, e.clientY); if (h && h.type === 'node' && app.g.nodes[h.id].owner === PLAYER) nodeDown = h.id; }
+  }
+  if (ptrs.size === 2) { nodeDown = -1; ndrag = null; const [a, b] = [...ptrs.values()]; pinch = Math.hypot(a.x - b.x, a.y - b.y); moved = true; } // a second finger always means pan and zoom
   camTo = null; vel.x = vel.y = 0;
   if (e.pointerType !== 'mouse') mapPress = window.setTimeout(() => { // long press on a statue
     if (ptrs.size !== 1 || moved || !downAt) return;
@@ -296,16 +307,29 @@ canvas.addEventListener('pointermove', e => {
   p.x = e.clientX; p.y = e.clientY;
   if (ptrs.size === 1) {
     if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 8) moved = true;
-    if (moved) { cam.x -= dx / cam.z; cam.y -= dy / (cam.z * TILT); vel.x = -dx / cam.z; vel.y = -dy / (cam.z * TILT); }
+    if (moved && nodeDown >= 0) { // dragging out of your node: aim at another node
+      const h = pick(e.clientX, e.clientY);
+      if (!ndrag) scrollArmed = false;
+      ndrag = { from: nodeDown, over: h && h.type === 'node' && h.id !== nodeDown ? h.id : -1 };
+      hideTip(); clearTimeout(mapPress);
+    } else if (moved) { cam.x -= dx / cam.z; cam.y -= dy / (cam.z * TILT); vel.x = -dx / cam.z; vel.y = -dy / (cam.z * TILT); }
   } else if (ptrs.size === 2) {
     const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
     if (pinch > 0) zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / pinch);
     pinch = d;
+    cam.x -= dx / 2 / cam.z; cam.y -= dy / 2 / (cam.z * TILT); // two fingers also pan
   }
 });
 const up = (e: PointerEvent) => {
   const had = ptrs.delete(e.pointerId);
   clearTimeout(mapPress);
+  if (ndrag && app.g) {
+    const d = ndrag; ndrag = null; nodeDown = -1; dirty = true;
+    if (d.over >= 0) openLaunch(d.from, d.over, app.g.nodes[d.over].owner === PLAYER);
+    if (ptrs.size < 2) pinch = 0;
+    return;
+  }
+  nodeDown = -1;
   if (had && ptrs.size === 0 && !moved && !longPressed && downAt && app.g && app.screen === 'game') tap(e.clientX, e.clientY);
   if (ptrs.size < 2) pinch = 0;
 };
@@ -348,7 +372,7 @@ function refresh() {
   while (toasts.length && (toasts[0].until < now || toasts.length > 4)) toasts.shift();
   setHtml(elToasts, 'toasts', toasts.map(t => `<div class="toast ${t.kind}" ${t.node >= 0 ? `data-a="focus:${t.node}"` : ''}>${t.msg.replace(/</g, '&lt;')}</div>`).join(''));
   setHtml(elHud, 'hud', hud(app));
-  if (!rosterDown) setHtml(elRoster, 'roster', roster(app));
+  if (!rosterDown) { setHtml(elRoster, 'roster', roster(app)); elRoster.className = g.specs.filter(x => x.owner === PLAYER).length * 66 > H - 80 ? 'many' : ''; }
   if (!sliding) { const p = panel(app); elPanel.className = p ? (app.launch ? 'open launch' : 'open') : ''; setHtml(elPanel, 'panel', p); }
   const ov = app.screen === 'help' ? help() : g.result || g.pending.length ? modal(app) : app.menu ? menu(app) : '';
   elOverlay.className = ov ? 'open' : '';
@@ -358,14 +382,12 @@ function refresh() {
 /** Nodes to highlight while the player is picking a target. */
 function glowSet(g: Game): Set<number> | null {
   const m = app.mode;
+  if (ndrag) return new Set(g.nodes.filter(n => n.id !== ndrag!.from && (n.owner === PLAYER || canTarget(g, n))).map(n => n.id));
   if (app.drag) { const sp = g.specs[app.drag.spec]; return new Set(g.nodes.filter(n => n.owner === PLAYER && moveEta(g, sp, n).via).map(n => n.id)); }
   if (!m) return null;
   const from = g.nodes[m.from], ok = (f: (n: GNode) => boolean) => new Set(g.nodes.filter(f).map(n => n.id));
-  if (m.k === 'convoy') return new Set(corridorReach(g, m.from));
   if (m.k === 'corridor') return ok(n => { const e = canCorridor(g, from, n); return !e || e === 'Not enough Ultanium'; });
-  if (m.k === 'missile') return ok(n => !canMissile(g, from, n));
-  if (m.k === 'rallyTo') return ok(n => n.owner === PLAYER && n.rally && n.id !== m.from);
-  return ok(n => n.id !== m.from && (n.owner === PLAYER || canTarget(g, n)));
+  return ok(n => !canMissile(g, from, n));
 }
 
 // ------------------------------------------------------------------ main loop
@@ -384,11 +406,30 @@ function frame(now: number) {
     if (g.result && !ended) { ended = true; endRun(); dirty = true; }
     if (!ptrs.size && Math.abs(vel.x) + Math.abs(vel.y) > 0.01) { cam.x += vel.x; cam.y += vel.y; vel.x *= 0.9; vel.y *= 0.9; }
     const kx = (keys.has('arrowright') || keys.has('d') ? 1 : 0) - (keys.has('arrowleft') || keys.has('a') ? 1 : 0), ky = (keys.has('arrowdown') || keys.has('s') ? 1 : 0) - (keys.has('arrowup') || keys.has('w') ? 1 : 0);
+    // desktop: push the mouse against a screen edge to scroll, like any RTS (not while it rests on the interface)
+    if (mouseIn && overMap && !ptrs.size && !app.drag && !app.menu && !g.pending.length && !document.getElementById('console')?.classList.contains('open')) {
+      const ex = lastPtr.x < 8 ? -1 : lastPtr.x > W - 8 ? 1 : 0, ey = lastPtr.y < 8 ? -1 : lastPtr.y > H - 8 ? 1 : 0;
+      if (ex || ey) { camTo = null; cam.x += (ex * 520 * dt) / cam.z; cam.y += (ey * 520 * dt) / (cam.z * TILT); }
+    }
+    // dragging a fleet or a specialist toward the screen edge scrolls the map, so off-screen targets can be reached
+    if (ndrag || app.drag) {
+      // a narrow band at each edge; it only starts working once the pointer has been clear of the edges, so a drag
+      // that begins in the roster or beside the screen edge does not scroll at once
+      const m = 34, px = lastPtr.x, py = lastPtr.y, top = 56;
+      const ex = px < m ? -1 : px > W - m ? 1 : 0, ey = py < top + m ? -1 : py > H - m ? 1 : 0;
+      const h = pick(px, py), over = h && h.type === 'node' ? h.id : -1;
+      const onTarget = over >= 0 && over !== ndrag?.from; // never scroll a node out from under the pointer
+      // scrolling starts only after the pointer rests at an edge for a moment, and never while it is over a node
+      if (!ex && !ey) { scrollArmed = true; edgeSince = 0; }
+      else if (onTarget) edgeSince = 0;
+      else if (scrollArmed && (edgeSince = edgeSince || now) && now - edgeSince > 350) { camTo = null; cam.x += (ex * 330 * dt) / cam.z; cam.y += (ey * 330 * dt) / (cam.z * TILT); }
+      if (ndrag) ndrag.over = over !== ndrag.from ? over : -1;
+    }
     if (kx || ky) { camTo = null; cam.x += (kx * 420 * dt) / cam.z; cam.y += (ky * 420 * dt) / (cam.z * TILT); }
     if (camTo) { cam.x += (camTo.x - cam.x) * 0.16; cam.y += (camTo.y - cam.y) * 0.16; if (Math.hypot(camTo.x - cam.x, camTo.y - cam.y) < 0.4) camTo = null; }
     cam.x = Math.max(-40, Math.min(g.w + 40, cam.x)); cam.y = Math.max(-40, Math.min(g.h + 40, cam.y));
-    const picking = !!app.mode || !!app.drag;
-    draw(ctx, g, { cam, w: W, h: H, sel: app.launch ? { type: 'node', id: app.launch.to } : app.sel, targeting: picking, from: app.mode?.from ?? app.launch?.from ?? -1, hover: app.drag ? app.drag.over : hover, glow: glowSet(g) }, now);
+    const picking = !!app.mode || !!app.drag || !!ndrag;
+    draw(ctx, g, { cam, w: W, h: H, sel: app.launch ? { type: 'node', id: app.launch.to } : app.sel, targeting: picking, from: ndrag?.from ?? app.mode?.from ?? app.launch?.from ?? -1, hover: ndrag ? ndrag.over : app.drag ? app.drag.over : hover, glow: glowSet(g) }, now);
     if (now - lastSave > 15000) { lastSave = now; save(); }
   } else { ctx.fillStyle = '#262e49'; ctx.fillRect(0, 0, W, H); }
   if (dirty || now - lastUi > 250) { dirty = false; lastUi = now; refresh(); }

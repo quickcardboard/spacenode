@@ -7,8 +7,8 @@ export const CFG = {
   // Economy
   mineOut: [0, 3, 5.5, 8], // Ultanium per minute by mine level (needs one Drone working per level)
   sizeMult: [1, 1.3, 1.7], // planet size multiplier
-  refineryMult: 1.5, labRp: 4, labWorkers: 2, supplyFree: 6,
-  upkeepDrone: 0.6, upkeepPower: 0.5, depotMult: 0.5, // Ultanium per minute per Drone / per point of specialist Power
+  refineryMult: 1.5, labRp: 4, labWorkers: 2, foundrySecs: 20, // a Foundry planet builds one Drone this often
+  upkeepDrone: 0.6, upkeepPower: 0.5, // Ultanium per minute per Drone / per point of specialist Power
   armyShare: 0.75, // stations stop building once upkeep would pass this share of income, so some is always left to spend
   desertSecs: 4, // one Drone deserts this often while you are broke
   // Upgrades: cost to reach level 2 and 3 (level 1 is free), shields to reach 1, 2, 3
@@ -44,8 +44,8 @@ export const CFG = {
 export const SPECIALTY: Record<string, { name: string; on: 'planet' | 'station'; desc: string }> = {
   refinery: { name: 'Refinery', on: 'planet', desc: 'Mine output +50%.' },
   lab: { name: 'Lab', on: 'planet', desc: 'Adds research speed. Needs 2 Drones working.' },
-  supply: { name: 'Supply world', on: 'planet', desc: 'Feeds 6 Drones: they cost no upkeep.' },
+  foundry: { name: 'Foundry', on: 'planet', desc: 'This planet builds its own Drones, one every 20 s.' },
   silo: { name: 'Missile Silo', on: 'station', desc: 'Builds missiles. A missile wipes a node\'s shield and kills 6 Drones. No upkeep.' },
-  depot: { name: 'Depot', on: 'station', desc: 'Drones garrisoned here cost half upkeep.' },
+  post: { name: 'Command Post', on: 'station', desc: 'One more active specialist here; specialists stationed here cost no upkeep.' },
   bay: { name: 'Launch Bay', on: 'station', desc: 'Fleets from here fly 30% faster and carry one more specialist.' },
 };
