@@ -504,6 +504,15 @@ export function rallyTarget(g: Game, n: GNode): GNode | null {
   return best;
 }
 function rallyTick(g: Game) {
+  // staffing first: a planet short of workers is topped up from the nearest node with Drones to spare
+  for (const n of g.nodes) {
+    if (n.owner !== PLAYER) continue;
+    const need = floorOf(g, n) - n.drones - g.fleets.filter(f => f.owner === PLAYER && (f.to === n.id || f.path?.includes(n.id))).reduce((s, f) => s + f.drones, 0);
+    if (need <= 0) continue;
+    const src = g.nodes.filter(o => o.owner === PLAYER && o.id !== n.id && o.drones - floorOf(g, o) >= need && (corridorPath(g, o.id, n.id) || slotsFree(g, o) > 0)).sort((a, b) => dist(a, n) - dist(b, n))[0];
+    if (!src) continue;
+    if (corridorPath(g, src.id, n.id)) convoy(g, src, n, need, []); else launch(g, src, n, need, []);
+  }
   for (const n of g.nodes) {
     if (n.owner !== PLAYER || n.rally) continue;
     const spare = n.drones - floorOf(g, n);

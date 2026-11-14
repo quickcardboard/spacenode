@@ -1,45 +1,36 @@
-# SpaceNodes
+# SpaceNodes (redesign v2)
 
-Single-player roguelike RTS for phone and desktop browsers. One persistent map, deterministic combat, specialists as physical assets, a three-faction Coalition and an Archon to capture.
+Single-player roguelike RTS for phone and desktop browsers, rebuilt around specialists: recruit them, choose which three go where, and take the Citadel before the Coalition's mobilization overwhelms you. Target run length 40–60 minutes.
+
+The earlier design lives on the `claude/hopeful-euler-cf2v3r` branch.
 
 ## Run it
 
 ```bash
 npm install
-npm run dev      # play at the printed URL (works on a phone on the same network)
-npm run build    # static site in dist/
-npm run bot -- 8 greedy 0   # headless balance runs: [count] [greedy|idle] [threat level]
-npm run pages    # rebuild the playable copy in docs/ (served by GitHub Pages)
+npm run dev      # play at the printed URL
+npm run pages    # rebuild the playable copy in docs/
+npm run bot -- 10 greedy 0   # headless balance runs: [count] [greedy|idle] [threat level]
 ```
 
-Play in a browser: https://quickcardboard.github.io/spacenode/ (once GitHub Pages is switched on for the `docs/` folder).
+## Rules
+
+- **Specialists** are passive. Each has a Power number (added to attack when aboard a fleet, to defence where stationed), one effect, and an upgraded form earned once by leading a winning attack. Three are active per node or fleet; extras wait in reserve. They cost upkeep by Power. Recruit 1 of 3 (or skip) at every neutral node, plus one at the start.
+- **Attacks need a leader.** A fleet without a specialist can only reinforce, or go as a probe with no Drones.
+- **Combat:** Drones + crew Power + bonuses must beat Drones + shield + defenders' Power. Whole numbers only.
+- **Nodes:** planets have a Mine level, stations a Barracks level; both have a Shield level; each takes one specialty for good (Refinery, Lab, Supply world / Missile Silo, Depot, Launch Bay).
+- **Economy:** mines pay Ultanium; every Drone and specialist costs upkeep. Stations build Drones one at a time while upkeep stays under a share of income; one button pauses all production. Broke with negative income means Drones desert.
+- **Launch slots** replace ships: two per station, one per planet. A slot is busy while its fleet is away.
+- **Rally points:** spare Drones flow to the nearest rally point on their own; corridors make that twice as fast. Planets short of workers are staffed automatically.
+- **Research:** Labs fill a bar; each time it fills you pick 1 of 3 cards from the edge of one global tree. Doctrine pairs lock each other out.
+- **Coalition:** three factions and an Archon, playing by the same rules (their attacks are led by Captains). Capturing a capital makes the whole faction surrender.
 
 ## Layout
 
-- `src/sim/` is the game: deterministic, seeded, fixed 10 Hz step, no DOM. `sim.ts` exposes `step()` and `exec(command)`; everything the player does is a command.
-- `src/sim/config.ts` and `src/sim/content.ts` hold every balance number and all content (specialists, commander archetypes, perks, relics, technologies, factions, Archons, events).
-- `src/ui/render.ts` draws the map in 3D with Three.js (low-poly lit models, dock arms, docked and orbiting ships) under a 2D overlay for flags and labels; `src/ui/ui.ts` builds the panels; `src/main.ts` is input, the loop and autosave.
+- `src/sim/` is the game: deterministic, seeded, 10 Hz, no DOM. `config.ts` holds every balance number; `content.ts` holds specialists, relics, research, factions and events.
+- `src/ui/render.ts` draws the 3D map (Three.js); `src/ui/ui.ts` builds the panels; `src/ui/console.ts` is the tuning console (press ` on desktop); `src/main.ts` is input and the loop.
 - `scripts/bot.ts` plays full runs without a browser.
 
-## Tuning console
+## Not built
 
-On desktop, press ` (backtick) or F2, or click ⚙. Every value in `src/sim/config.ts`, every building's cost, time and limit, and the research cost tables can be edited while playing. Edits are saved in the browser and re-applied on load. **Copy changes** puts them on the clipboard as JSON. The Commands tab has cheats for testing (`ult 500`, `reveal`, `stage 4`, `tech all`, `speed 16`, `help`).
-
-## Rules as built
-
-- Defence is Drones plus shields. Shield generators give 5 each, at most 20 per node; shields absorb attacks first and recharge over time. Neutral planets carry 5, 10 or 20 by size.
-- Turrets do not add defence: each shoots down 3 Drones of every arriving enemy fleet. Unseen fleets and Siegebreakers slip past.
-- Late-game sinks: Muster (buy Drones at a station), Habitats (+15 cap), repeatable research.
-- Research: five branches; tier 3 in each is a doctrine pair (choosing one locks the other); each branch ends in a repeatable technology.
-- Mines produce Ultanium; each generator powers two mines; mines need one Drone each to run.
-- Building and production share one lane per node (a station that is building makes no Drones). Research has its own lane.
-- One global Drone cap. Ships carry any number of Drones and up to three specialists.
-- Docks limit how many ships can load and unload at a station; the rest orbit with their cargo aboard.
-- Unmanned ships identify their target and are lost.
-- Commander captured: 150 seconds to retake the node, no pause while a rescue is in flight.
-- Every neutral planet offers one of three specialists on capture. Any technology with its prerequisite met can be researched.
-- Coalition factions really expand, build and produce. The mobilization meter unlocks larger offensives drawn from those forces.
-
-## Not built yet
-
-New-station construction, sound, a tutorial, offline install (service worker), skirmish and multiplayer.
+Sound, a tutorial, offline install, skirmish and multiplayer.

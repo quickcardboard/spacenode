@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import type { Game, GNode, Ship } from '../sim/types';
+import type { Game, GNode, Fleet } from '../sim/types';
 import { PLAYER } from '../sim/types';
-import { radii, shipRadii, sideColor, shipSeen, canTarget, shieldMax, docks, aegis } from '../sim/core';
-import { SPECS, TECHS, TECH_TIME } from '../sim/content';
+import { radii, fleetRadii, sideColor, fleetSeen, canTarget, shieldMax, aegis, slotsOf, slotsBusy, activeSpecs, labRunning } from '../sim/core';
+import { SPECS } from '../sim/content';
 
 // 3D diorama renderer. Low-poly, flat-shaded models stand above a misty plane and are lit by one
 // sun; a perspective camera looks down at an angle. A transparent 2D canvas on top carries only
@@ -12,7 +12,7 @@ import { SPECS, TECHS, TECH_TIME } from '../sim/content';
 export interface Cam { x: number; y: number; z: number }
 export interface RenderUi {
   cam: Cam; w: number; h: number;
-  sel: { type: 'node' | 'ship'; id: number } | null;
+  sel: { type: 'node' | 'fleet'; id: number } | null;
   targeting: boolean; from: number; hover: number;
   glow?: Set<number> | null; // nodes to highlight as valid picks
 }
@@ -33,8 +33,7 @@ const TERRAIN = [
   ['#cc9379', '#a56e58', '#e3b7a2'], ['#cfdcdf', '#a2b5ba', '#eef5f5'],
 ];
 const BCOL: Record<string, string> = {
-  gen: '#e3c565', mine: '#a8835a', lab: '#7fb2dc', slab: '#7fb2dc', shield: '#bfe3ff', sshield: '#bfe3ff', relay: '#cbb2e6', habitat: '#9fd0a8',
-  turret: '#6d7385', sensor: '#f1ead9', barracks: '#dd7a63', shipyard: '#e3c565', dock: '#b8ad96',
+  mine: '#a8835a', barracks: '#dd7a63', shield: '#bfe3ff', refinery: '#e3c565', lab: '#7fb2dc', supply: '#9fd0a8', silo: '#d98a8a', depot: '#b8ad96', bay: '#e3c565',
 };
 
 export function known(g: Game, n: GNode): { tier: 'live' | 'stale' | 'detected' | 'hidden'; owner: number; drones: number } {
@@ -52,7 +51,7 @@ let ringIn: THREE.LineLoop, ringOut: THREE.LineLoop, selRing: THREE.Mesh;
 let corridorGrp: THREE.Group | null = null, corridorSig = '';
 type NodeView = { sig: string; grp: THREE.Group; spin: THREE.Object3D | null; orb: THREE.Object3D | null; statues: { spec: number; x: number; z: number }[] };
 const nodeViews = new Map<number, NodeView>();
-const shipViews = new Map<number, { sig: string; grp: THREE.Group; statues: number[] }>();
+const fleetViews = new Map<number, { sig: string; grp: THREE.Group; statues: number[] }>();
 const MARGIN = 320, FOG_SCALE = 0.5;
 let vw = 0, vh = 0;
 const v3 = new THREE.Vector3();
@@ -95,8 +94,8 @@ function init() {
 
 function buildWorld(g: Game) {
   for (const v of nodeViews.values()) dispose(v.grp);
-  for (const v of shipViews.values()) dispose(v.grp);
-  nodeViews.clear(); shipViews.clear();
+  for (const v of fleetViews.values()) dispose(v.grp);
+  nodeViews.clear(); fleetViews.clear();
   if (corridorGrp) { dispose(corridorGrp); corridorGrp = null; corridorSig = ''; }
   for (const o of scene.children.filter(c => c.userData.world)) dispose(o);
   let s = g.seed | 0;
@@ -143,7 +142,7 @@ function paintGround(g: Game, now: number) {
   c.fillStyle = 'rgba(86,97,128,0.8)'; c.fillRect(-MARGIN, -MARGIN, g.w + MARGIN * 2, g.h + MARGIN * 2);
   c.globalCompositeOperation = 'destination-out';
   const eyes: { x: number; y: number; r: [number, number] }[] = g.nodes.filter(n => n.owner === PLAYER).map(n => ({ x: n.x, y: n.y, r: radii(g, n) }));
-  for (const s of g.ships) if (s.owner === PLAYER && !s.lane) eyes.push({ x: s.x, y: s.y, r: shipRadii(g, s) });
+  for (const f of g.fleets) if (f.owner === PLAYER && !f.lane && !f.missile) eyes.push({ x: f.x, y: f.y, r: fleetRadii(g, f) });
   for (const e of eyes) {
     const [ri, ro] = e.r;
     let gr = c.createRadialGradient(e.x, e.y, ro * 0.8, e.x, e.y, ro);
@@ -196,46 +195,55 @@ function planetMesh(n: GNode, r: number, fade: number): THREE.Mesh {
   return m;
 }
 
-/** One recognisable building per structure type, about 2 world units tall. */
-function building(id: string, fade: number, researching: boolean): THREE.Group {
-  const b = new THREE.Group(), col = BCOL[id] || '#999';
-  if (id === 'gen') { b.add(mesh(new THREE.CylinderGeometry(0.6, 0.7, 1.2, 6), lam(col, fade), 0, 0.6), mesh(new THREE.CylinderGeometry(0.25, 0.25, 0.6, 6), lam('#4b5063', fade), 0, 1.5), mesh(new THREE.TorusGeometry(0.62, 0.1, 4, 12), lam('#4b5063', fade), 0, 0.9)); (b.children[2] as THREE.Mesh).rotation.x = Math.PI / 2; }
-  else if (id === 'mine') { b.add(mesh(new THREE.BoxGeometry(1, 0.4, 1), lam('#6f6355', fade), 0, 0.2), mesh(new THREE.ConeGeometry(0.55, 2.1, 4), lam(col, fade), 0, 1.4), mesh(new THREE.BoxGeometry(0.2, 0.2, 1.4), lam('#4b5063', fade), 0, 2.2)); }
-  else if (id === 'lab' || id === 'slab') {
-    b.add(mesh(new THREE.CylinderGeometry(0.5, 0.6, 2.0, 6), lam(col, fade), 0, 1.0), mesh(new THREE.SphereGeometry(0.58, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), lam(PAPER, fade), 0, 2.0));
-    if (researching) { const o = mesh(new THREE.OctahedronGeometry(0.42), flat('#9fe0ff'), 0, 3.0); o.name = 'orb'; b.add(o); }
+/** One recognisable model per building, about 2 world units tall. */
+function building(id: string, fade: number, lit = false): THREE.Group {
+  const b = new THREE.Group(), col = BCOL[id] || '#999', dark = '#4b5063';
+  if (id === 'mine') { b.add(mesh(new THREE.BoxGeometry(1, 0.4, 1), lam('#6f6355', fade), 0, 0.2), mesh(new THREE.ConeGeometry(0.55, 2.1, 4), lam(col, fade), 0, 1.4), mesh(new THREE.BoxGeometry(0.2, 0.2, 1.4), lam(dark, fade), 0, 2.2)); }
+  else if (id === 'refinery') { b.add(mesh(new THREE.CylinderGeometry(0.8, 0.9, 1.5, 6), lam(col, fade), 0, 0.75), mesh(new THREE.CylinderGeometry(0.28, 0.28, 1.4, 6), lam(dark, fade), 0.3, 2.1), mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.9, 6), lam(dark, fade), -0.35, 1.9)); }
+  else if (id === 'lab') {
+    b.add(mesh(new THREE.CylinderGeometry(0.6, 0.7, 2.2, 6), lam(col, fade), 0, 1.1), mesh(new THREE.SphereGeometry(0.7, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), lam(PAPER, fade), 0, 2.2));
+    if (lit) { const o = mesh(new THREE.OctahedronGeometry(0.45), flat('#9fe0ff'), 0, 3.3); o.name = 'orb'; b.add(o); }
   }
-  else if (id === 'shield') { b.add(mesh(new THREE.SphereGeometry(1.0, 10, 5, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshLambertMaterial({ color: col, transparent: true, opacity: 0.75, flatShading: true }))); }
-  else if (id === 'relay') { b.add(mesh(new THREE.CylinderGeometry(0.1, 0.16, 2.8, 4), lam(PAPER, fade), 0, 1.4), mesh(new THREE.TorusGeometry(0.5, 0.08, 4, 12), lam(col, fade), 0, 2.4), mesh(new THREE.TorusGeometry(0.32, 0.08, 4, 12), lam(col, fade), 0, 1.8)); }
-  else if (id === 'habitat') { b.add(mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.7, 8), lam(col, fade), 0, 0.35), mesh(new THREE.SphereGeometry(0.75, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), lam(PAPER, fade), 0, 0.7)); }
-  else if (id === 'barracks') { b.add(mesh(new THREE.BoxGeometry(1.6, 0.9, 1.0), lam(col, fade), 0, 0.45), mesh(new THREE.ConeGeometry(0.75, 0.6, 4), lam(shadeCss(col, 0.75), fade), 0, 1.2)); (b.children[1] as THREE.Mesh).rotation.y = Math.PI / 4; }
-  else if (id === 'shipyard') { for (const x of [-0.8, 0.8]) b.add(mesh(new THREE.BoxGeometry(0.2, 2.0, 0.2), lam(col, fade), x, 1.0)); b.add(mesh(new THREE.BoxGeometry(1.9, 0.22, 0.3), lam(col, fade), 0, 2.0)); }
-  else if (id === 'sensor') { const d = mesh(new THREE.ConeGeometry(0.7, 0.45, 10, 1, true), lam(col, fade), 0, 1.4); d.rotation.x = Math.PI * 0.8; b.add(mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.2, 4), lam('#4b5063', fade), 0, 0.6), d); }
+  else if (id === 'supply') { b.add(mesh(new THREE.CylinderGeometry(1.1, 1.1, 0.5, 8), lam(col, fade), 0, 0.25), mesh(new THREE.SphereGeometry(0.95, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), lam(PAPER, fade), 0, 0.5), mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), lam(col, fade), 1.3, 0.25)); }
+  else if (id === 'barracks') { b.add(mesh(new THREE.BoxGeometry(1.5, 0.9, 1.0), lam(col, fade), 0, 0.45), mesh(new THREE.ConeGeometry(0.72, 0.6, 4), lam('#b05a47', fade), 0, 1.2)); (b.children[1] as THREE.Mesh).rotation.y = Math.PI / 4; }
+  else if (id === 'silo') { b.add(mesh(new THREE.CylinderGeometry(0.75, 0.85, 1.6, 8), lam('#6d7385', fade), 0, 0.8)); if (lit) b.add(mesh(new THREE.CylinderGeometry(0.32, 0.32, 1.6, 6), lam(PAPER, fade), 0, 2.2), mesh(new THREE.ConeGeometry(0.34, 0.8, 6), lam('#d2604a', fade), 0, 3.4)); else b.add(mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.15, 8), lam(dark, fade), 0, 1.65)); }
+  else if (id === 'depot') { for (const [x, y, z] of [[-0.55, 0.4, 0], [0.55, 0.4, 0], [0, 1.2, 0], [0, 0.4, 0.9]]) b.add(mesh(new THREE.BoxGeometry(0.95, 0.8, 0.8), lam(col, fade), x, y, z)); }
+  else if (id === 'bay') { for (const x of [-0.9, 0.9]) b.add(mesh(new THREE.BoxGeometry(0.22, 2.2, 0.22), lam(col, fade), x, 1.1)); b.add(mesh(new THREE.BoxGeometry(2.1, 0.24, 0.32), lam(col, fade), 0, 2.2), mesh(new THREE.BoxGeometry(1.4, 0.1, 1.4), lam(dark, fade), 0, 0.05)); }
   return b;
 }
-const PLANET_ORDER = ['lab', 'gen', 'mine', 'shield', 'habitat', 'relay'];
 
+/** Where launch slot i sits: on a dock arm for a station, on the ground beside a planet. */
 const DOCK_ANGLES = [150, 30, 210, -30].map(d => (d * Math.PI) / 180);
-function dockPos(n: GNode, i: number): { x: number; y: number; z: number; a: number } {
+function padPos(n: GNode, i: number): { x: number; y: number; z: number; a: number } {
   const r = nodeR(n);
-  if (n.kind === 'planet') { const a = Math.PI * (0.92 + 0.13 * Math.ceil(i / 2) * (i % 2 ? 1 : -1)); return { x: Math.cos(a) * (r * 2.1 + 2.2), y: 0.7, z: Math.sin(a) * (r * 2.1 + 2.2), a }; }
+  if (n.kind === 'planet') { const a = Math.PI * (0.9 + 0.16 * i); return { x: Math.cos(a) * (r * 2.0 + 2.4), y: 0.75, z: Math.sin(a) * (r * 2.0 + 2.4), a }; }
   const a = DOCK_ANGLES[i % 4];
-  return { x: Math.cos(a) * r * 2.25, y: r * 0.5 + r * 0.55 + 0.55, z: Math.sin(a) * r * 2.25, a };
+  return { x: Math.cos(a) * r * 2.3, y: r * 0.5 + r * 0.55 + 0.6, z: Math.sin(a) * r * 2.3, a };
 }
 
-/** A specialist statue on a hex plinth. Commanders wear a crown. */
-function statue(color: string, cmd: boolean, scale = 1): THREE.Group {
+/** A specialist statue on a hex plinth. Commanders wear a crown; upgraded specialists get a gold base. */
+function statue(color: string, cmd: boolean, scale = 1, up = false): THREE.Group {
   const p = new THREE.Group();
-  p.add(mesh(new THREE.CylinderGeometry(1.0, 1.1, 0.35, 6), lam('#e6dcc6'), 0, 0.17));
+  p.add(mesh(new THREE.CylinderGeometry(1.0, 1.1, 0.35, 6), lam(up ? GOLD : '#e6dcc6'), 0, 0.17));
   p.add(mesh(new THREE.ConeGeometry(0.95, 2.3, 7), lam(color), 0, 0.35 + 1.15));
-  p.add(mesh(new THREE.CylinderGeometry(0.98, 0.98, 0.18, 7), lam(shadeCss(color, 0.7)), 0, 0.55)); // hem
+  p.add(mesh(new THREE.CylinderGeometry(0.98, 0.98, 0.18, 7), lam(shadeCss(color, 0.7)), 0, 0.55));
   p.add(mesh(new THREE.IcosahedronGeometry(0.72, 0), lam(color), 0, 0.35 + 2.3 + 0.35));
   if (cmd) { const crown = mesh(new THREE.CylinderGeometry(0.55, 0.42, 0.45, 5, 1, true), lam(GOLD), 0, 0.35 + 2.3 + 1.05); (crown.material as THREE.Material).side = THREE.DoubleSide; p.add(crown); }
   p.scale.setScalar(scale);
   return p;
 }
 
-function buildNode(g: Game, n: GNode, tier: string, owner: number, researching: boolean): { grp: THREE.Group; spin: THREE.Object3D | null; orb: THREE.Object3D | null } {
+function shipModel(color: string, crew: { c: string; cmd: boolean }[], scale = 1.9): THREE.Group {
+  // points along +x: tapered hull, swept wing, coloured tail fin, crew standing on deck
+  const m = new THREE.Group();
+  const hullM = new THREE.Mesh(new THREE.ConeGeometry(0.55, 2.6, 4), lam(HULL)); hullM.rotation.z = -Math.PI / 2; hullM.scale.set(1, 1, 1.5);
+  m.add(hullM, mesh(new THREE.BoxGeometry(0.9, 0.12, 2.6), lam(color), -0.6), mesh(new THREE.BoxGeometry(0.7, 0.7, 0.12), lam(color), -0.9, 0.4));
+  crew.forEach((c, i) => { const st = statue(c.c, c.cmd, 0.36); st.position.set(0.1 - i * 0.6, 0.1, i === 0 ? 0 : (i % 2 ? -0.6 : 0.6)); m.add(st); });
+  m.scale.setScalar(scale);
+  return m;
+}
+
+function buildNode(g: Game, n: GNode, tier: string, owner: number, ready: number): { grp: THREE.Group; spin: THREE.Object3D | null; orb: THREE.Object3D | null } {
   const grp = new THREE.Group(), r = nodeR(n), sil = tier === 'detected', fade = tier === 'stale' ? 0.35 : 0;
   const col = sil ? UNKNOWN : owner === 0 ? NEUTRAL : sideColor(g, owner);
   let spin: THREE.Object3D | null = null;
@@ -247,67 +255,53 @@ function buildNode(g: Game, n: GNode, tier: string, owner: number, researching: 
     return { grp, spin, orb: null };
   }
   if (owner !== 0) grp.add(ring(r * 1.45, r * 1.62, col, 0.06, 0, Math.PI * 2, fade ? 0.5 : 1));
+  const total = g.sides[owner] ? slotsOf(g, n) : 0;
 
   if (n.kind === 'planet') {
     const m = planetMesh(n, r, fade); m.position.y = r * 1.5; grp.add(m); spin = m;
     if (n.size === 2) { const t = new THREE.Mesh(new THREE.TorusGeometry(r * 1.55, r * 0.09, 4, 28), lam(TERRAIN[n.id % 5][2], fade)); t.rotation.x = Math.PI / 2 - 0.3; t.rotation.y = 0.2; t.position.y = r * 1.5; grp.add(t); }
-    // buildings stand on the ground in an arc behind and beside the planet; the front is kept for statues
-    const items: string[] = [];
-    for (const id of PLANET_ORDER) for (let i = 0; i < Math.min(4, n.b[id] || 0); i++) items.push(id);
-    const span = Math.min(Math.PI * 1.3, items.length * 0.5), rad = r * 1.25 + 1.6;
-    items.forEach((id, i) => {
-      const a = -Math.PI / 2 + (items.length > 1 ? -span / 2 + (span * i) / (items.length - 1) : 0);
-      const bld = building(id, fade, researching && id === 'lab'); bld.position.set(Math.cos(a) * rad, 0, Math.sin(a) * rad * 0.9); grp.add(bld);
-    });
+    // one mine rig per mine level along the back; the specialty is one large building at the right
+    for (let i = 0; i < n.lv; i++) { const a = -Math.PI / 2 + (i - (n.lv - 1) / 2) * 0.55, rad = r * 1.25 + 1.7; const b = building('mine', fade); b.position.set(Math.cos(a) * rad, 0, Math.sin(a) * rad * 0.9); grp.add(b); }
+    if (n.spec) { const b = building(n.spec, fade, n.spec === 'lab' && owner === PLAYER && labRunning(g, n)); b.scale.setScalar(1.5); b.position.set(r * 1.3 + 2.4, 0, -r * 0.2); grp.add(b); }
+    for (let i = 0; i < total; i++) { const d = padPos(n, i); grp.add(mesh(new THREE.CylinderGeometry(1.5, 1.5, 0.12, 6), lam(col, fade), d.x, 0.06, d.z)); }
   } else {
-    const base = r * 0.5, hh = r * 1.1;
+    const base = r * 0.5, hh = r * 1.1, roofY = base + hh;
     const wall = n.citadel ? '#57526f' : HULL;
     grp.add(mesh(new THREE.CylinderGeometry(r, r * 0.92, hh, 6), lam(wall, fade), 0, base + hh / 2));
     grp.add(mesh(new THREE.CylinderGeometry(r * 0.92, r * 0.35, r * 0.45, 6), lam(n.citadel ? '#413d57' : '#b8ad96', fade), 0, base - r * 0.22));
-    grp.add(mesh(new THREE.CylinderGeometry(r * 0.5, r * 0.68, r * 0.4, 6), lam(col, fade), 0, base + hh + r * 0.2));
-    const roofY = base + hh;
+    grp.add(mesh(new THREE.CylinderGeometry(r * 0.5, r * 0.68, r * 0.4, 6), lam(col, fade), 0, roofY + r * 0.2));
     if (n.citadel) {
       grp.add(mesh(new THREE.ConeGeometry(r * 0.3, r * 1.9, 6), lam(col, fade), 0, roofY + r * 1.35));
       const halo = mesh(new THREE.TorusGeometry(r * 1.6, r * 0.07, 4, 32), lam(col, fade), 0, base + hh * 0.6); halo.rotation.x = Math.PI / 2; grp.add(halo); spin = halo;
     } else if (n.home || n.capital) grp.add(mesh(new THREE.CylinderGeometry(r * 0.07, r * 0.07, r * 0.9, 4), lam(PAPER, fade), 0, roofY + r * 0.8));
-    // one arm and landing pad per dock; pads are the only places ships can load and unload
-    const nd = Math.min(4, docks(n));
-    for (let i = 0; i < nd; i++) {
-      const a = DOCK_ANGLES[i], len = r * 1.25;
+    // a dock arm and pad per launch slot
+    for (let i = 0; i < Math.min(4, total); i++) {
+      const a = DOCK_ANGLES[i], len = r * 1.3;
       const arm = mesh(new THREE.BoxGeometry(len, r * 0.14, r * 0.3), lam('#b8ad96', fade), Math.cos(a) * (r * 0.9 + len / 2), base + hh / 2, Math.sin(a) * (r * 0.9 + len / 2)); arm.rotation.y = -a; grp.add(arm);
-      grp.add(mesh(new THREE.CylinderGeometry(r * 0.42, r * 0.42, r * 0.1, 6), lam(col, fade), Math.cos(a) * r * 2.25, base + hh / 2 + r * 0.05, Math.sin(a) * r * 2.25));
+      grp.add(mesh(new THREE.CylinderGeometry(r * 0.5, r * 0.5, r * 0.1, 6), lam(col, fade), Math.cos(a) * r * 2.3, base + hh / 2 + r * 0.05, Math.sin(a) * r * 2.3));
     }
-    // rooftop: turrets ring the edge; lab and sensor sit on the roof; barracks and yard hang off the back
-    for (let i = 0; i < Math.min(3, n.b.turret || 0); i++) {
-      const a = Math.PI / 2 + (i - 1) * 1.05, x = Math.cos(a) * r * 0.8, z = Math.sin(a) * r * 0.8;
-      grp.add(mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), lam(BCOL.turret, fade), x, roofY + 0.4, z));
-      grp.add(mesh(new THREE.BoxGeometry(0.22, 0.22, 1.3), lam('#4b5063', fade), x, roofY + 0.55, z + 0.7));
-    }
-    if (n.b.slab) { const l = building('slab', fade, researching); l.position.set(-r * 0.35, roofY + r * 0.3, -r * 0.35); l.scale.setScalar(0.9); grp.add(l); }
-    if (n.b.sensor) { const s = building('sensor', fade, false); s.position.set(r * 0.4, roofY, -r * 0.4); grp.add(s); }
-    if (n.b.barracks) { const b = building('barracks', fade, false); b.position.set(-r * 0.75, base + hh * 0.35, -r * 1.25); grp.add(b); }
-    if (n.b.shipyard) { const y = building('shipyard', fade, false); y.position.set(r * 0.8, base + hh * 0.2, -r * 1.3); grp.add(y); }
-    for (let i = 0; i < Math.min(4, n.b.sshield || 0); i++) { const a = -Math.PI / 2 + (i - 1.5) * 0.55; grp.add(mesh(new THREE.SphereGeometry(0.55, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), lam(BCOL.sshield, fade), Math.cos(a) * r * 0.6, roofY, Math.sin(a) * r * 0.6)); }
+    // barracks blocks hang off the back, one per level; the specialty stands on the roof
+    for (let i = 0; i < n.lv; i++) { const b = building('barracks', fade); b.position.set((i - (n.lv - 1) / 2) * 1.8, base + hh * 0.3, -r * 1.2); grp.add(b); }
+    if (n.spec) { const b = building(n.spec, fade, n.spec === 'silo' && n.missile > 0); b.scale.setScalar(1.15); b.position.set(-r * 0.2, roofY + r * 0.38, -r * 0.1); grp.add(b); }
   }
-  // shield bubble: its strength is shown by how solid it looks (updated each frame)
+  // a ship waits on every free launch slot: no ship on the pad means that fleet is away
+  for (let i = total - ready; i < total; i++) {
+    const d = padPos(n, i), sm = shipModel(col, [], 1.6);
+    sm.position.set(d.x, d.y, d.z); sm.rotation.y = -d.a; grp.add(sm);
+  }
   const bub = mesh(new THREE.SphereGeometry(r * (n.kind === 'planet' ? 1.75 : 1.7), 16, 10), new THREE.MeshLambertMaterial({ color: '#bfe3ff', transparent: true, opacity: 0, depthWrite: false, flatShading: true }), 0, n.kind === 'planet' ? r * 1.5 : r * 1.05);
   bub.name = 'bubble'; bub.renderOrder = 2; grp.add(bub);
-  const orb = grp.getObjectByName('orb') || null;
-  return { grp, spin, orb };
+  return { grp, spin, orb: grp.getObjectByName('orb') || null };
 }
 
-function shipMesh(color: string, crew: string[], lane: boolean): THREE.Group {
-  const s = new THREE.Group(), m = new THREE.Group();
-  if (lane) { // a convoy pod gliding along a corridor
-    m.add(mesh(new THREE.OctahedronGeometry(0.9), flat(color)), mesh(new THREE.OctahedronGeometry(1.4), flat(color, 0.3)));
-  } else { // points along +x: tapered hull, swept wing, coloured tail fin
-    const hullM = new THREE.Mesh(new THREE.ConeGeometry(0.55, 2.6, 4), lam(HULL)); hullM.rotation.z = -Math.PI / 2; hullM.scale.set(1, 1, 1.5);
-    m.add(hullM, mesh(new THREE.BoxGeometry(0.9, 0.12, 2.6), lam(color), -0.6), mesh(new THREE.BoxGeometry(0.7, 0.7, 0.12), lam(color), -0.9, 0.4));
-    crew.forEach((c, i) => { const st = statue(c, c === GOLD, 0.34); st.position.set(-0.2 - i * 0.55, 0.1, (i % 2 ? -1 : 1) * 0.55 * (i ? 1 : 0)); m.add(st); });
-    m.scale.setScalar(1.35);
-  }
+function fleetMesh(g: Game, f: Fleet, crewIds: number[]): THREE.Group {
+  const s = new THREE.Group(), color = f.owner === 0 ? '#d9d9d9' : sideColor(g, f.owner);
+  let m: THREE.Group;
+  if (f.missile) { m = new THREE.Group(); const body = mesh(new THREE.CylinderGeometry(0.3, 0.3, 2.2, 6), lam(PAPER)); body.rotation.z = Math.PI / 2; const tip = mesh(new THREE.ConeGeometry(0.34, 0.9, 6), lam('#d2604a'), 1.5); tip.rotation.z = -Math.PI / 2; m.add(body, tip, mesh(new THREE.OctahedronGeometry(0.5), flat('#ffb07a', 0.8), -1.3)); m.scale.setScalar(1.4); }
+  else if (f.lane) { m = new THREE.Group(); m.add(mesh(new THREE.OctahedronGeometry(0.9), flat(color)), mesh(new THREE.OctahedronGeometry(1.4), flat(color, 0.3))); }
+  else m = shipModel(color, crewIds.map(i => ({ c: i === g.cmdSpec ? GOLD : SPECS[g.specs[i].def].color, cmd: i === g.cmdSpec })), f.probe ? 1.1 : 1.9);
   m.name = 'model';
-  const blob = new THREE.Mesh(new THREE.CircleGeometry(1.2, 12), flat('#0c101e', 0.35)); blob.rotation.x = -Math.PI / 2; blob.name = 'shadow';
+  const blob = new THREE.Mesh(new THREE.CircleGeometry(1.6, 12), flat('#0c101e', 0.35)); blob.rotation.x = -Math.PI / 2; blob.name = 'shadow';
   s.add(m, blob);
   return s;
 }
@@ -335,27 +329,32 @@ function flag(ctx: CanvasRenderingContext2D, x: number, y: number, col: string, 
   ctx.globalAlpha = 1;
 }
 
-/** Small vector icon for a structure, centred on (x, y), about 12 px across. */
+/** Small vector icon, centred on (x, y), about 12 px across. */
 function icon(c: CanvasRenderingContext2D, id: string, x: number, y: number) {
   c.save(); c.translate(x, y); c.fillStyle = INK; c.strokeStyle = INK; c.lineWidth = 1.6; c.lineJoin = 'round'; c.lineCap = 'round';
   c.beginPath();
   switch (id) {
     case 'mine': c.moveTo(-6, 5); c.lineTo(-1, -5); c.lineTo(2, 0); c.lineTo(4, -2); c.lineTo(7, 5); c.closePath(); c.fill(); break;
-    case 'gen': c.moveTo(1, -6); c.lineTo(-4, 1); c.lineTo(0, 1); c.lineTo(-1, 6); c.lineTo(4, -1); c.lineTo(0, -1); c.closePath(); c.fill(); break;
-    case 'lab': case 'slab': c.moveTo(-2, -6); c.lineTo(2, -6); c.moveTo(-1.5, -6); c.lineTo(-1.5, -1); c.lineTo(-5, 5); c.lineTo(5, 5); c.lineTo(1.5, -1); c.lineTo(1.5, -6); c.stroke(); c.beginPath(); c.moveTo(-3.5, 2.5); c.lineTo(3.5, 2.5); c.lineTo(5, 5); c.lineTo(-5, 5); c.fill(); break;
-    case 'shield': case 'sshield': c.moveTo(0, -6); c.lineTo(5, -4); c.lineTo(4, 2); c.lineTo(0, 6); c.lineTo(-4, 2); c.lineTo(-5, -4); c.closePath(); id === 'shield' ? c.fill() : c.stroke(); break;
-    case 'turret': c.arc(-1, 1, 3.5, 0, 7); c.fill(); c.beginPath(); c.moveTo(1, -1); c.lineTo(6, -5); c.stroke(); break;
-    case 'habitat': c.arc(0, 2, 5, Math.PI, 0); c.lineTo(5, 4); c.lineTo(-5, 4); c.closePath(); c.fill(); break;
-    case 'unused': c.moveTo(-6, 5); c.lineTo(-6, -4); c.lineTo(-3, -4); c.lineTo(-3, -1); c.lineTo(-1, -1); c.lineTo(-1, -4); c.lineTo(1, -4); c.lineTo(1, -1); c.lineTo(3, -1); c.lineTo(3, -4); c.lineTo(6, -4); c.lineTo(6, 5); c.closePath(); c.fill(); break;
-    case 'sensor': c.arc(0, -1, 5, Math.PI * 0.15, Math.PI * 0.85); c.stroke(); c.beginPath(); c.moveTo(0, -1); c.lineTo(0, 6); c.stroke(); break;
-    case 'relay': c.moveTo(0, 6); c.lineTo(0, -3); c.stroke(); c.beginPath(); c.arc(0, -3, 3, Math.PI * 1.15, Math.PI * 1.85); c.stroke(); c.beginPath(); c.arc(0, -3, 6, Math.PI * 1.2, Math.PI * 1.8); c.stroke(); break;
     case 'barracks': c.moveTo(-5, 0); c.lineTo(0, -4); c.lineTo(5, 0); c.moveTo(-5, 5); c.lineTo(0, 1); c.lineTo(5, 5); c.stroke(); break;
-    case 'shipyard': c.moveTo(6, 0); c.lineTo(-4, -5); c.lineTo(-2, 0); c.lineTo(-4, 5); c.closePath(); c.fill(); break;
-    case 'dock': c.moveTo(-5, -4); c.lineTo(-5, 4); c.lineTo(5, 4); c.lineTo(5, -4); c.stroke(); break;
+    case 'shield': c.moveTo(0, -6); c.lineTo(5, -4); c.lineTo(4, 2); c.lineTo(0, 6); c.lineTo(-4, 2); c.lineTo(-5, -4); c.closePath(); c.fill(); break;
+    case 'refinery': c.moveTo(1, -6); c.lineTo(-4, 1); c.lineTo(0, 1); c.lineTo(-1, 6); c.lineTo(4, -1); c.lineTo(0, -1); c.closePath(); c.fill(); break;
+    case 'lab': c.moveTo(-2, -6); c.lineTo(2, -6); c.moveTo(-1.5, -6); c.lineTo(-1.5, -1); c.lineTo(-5, 5); c.lineTo(5, 5); c.lineTo(1.5, -1); c.lineTo(1.5, -6); c.stroke(); c.beginPath(); c.moveTo(-3.5, 2.5); c.lineTo(3.5, 2.5); c.lineTo(5, 5); c.lineTo(-5, 5); c.fill(); break;
+    case 'supply': c.arc(0, 2, 5, Math.PI, 0); c.lineTo(5, 4); c.lineTo(-5, 4); c.closePath(); c.fill(); break;
+    case 'silo': c.moveTo(0, -7); c.lineTo(3, -2); c.lineTo(3, 4); c.lineTo(5, 6); c.lineTo(-5, 6); c.lineTo(-3, 4); c.lineTo(-3, -2); c.closePath(); c.fill(); break;
+    case 'depot': c.rect(-6, -1, 5.5, 6); c.rect(0.5, -1, 5.5, 6); c.rect(-3, -6.5, 5.5, 5); c.fill(); break;
+    case 'bay': c.moveTo(6, 0); c.lineTo(-4, -5); c.lineTo(-2, 0); c.lineTo(-4, 5); c.closePath(); c.fill(); break;
   }
   c.restore();
 }
-const ICON_ORDER = ['lab', 'slab', 'gen', 'mine', 'shield', 'sshield', 'habitat', 'relay', 'turret', 'sensor', 'barracks', 'shipyard', 'dock'];
+/** A chip with an icon and level pips: what this node is, at a glance. */
+function chipLv(c: CanvasRenderingContext2D, id: string, lv: number, x: number, y: number, lit = false): number {
+  const w = lv > 0 ? 40 : 22;
+  c.fillStyle = BCOL[id]; c.beginPath(); c.roundRect(x, y - 10, w, 20, 6); c.fill();
+  if (lit) { c.strokeStyle = '#9fe0ff'; c.lineWidth = 2.5; c.beginPath(); c.roundRect(x - 1.5, y - 11.5, w + 3, 23, 7); c.stroke(); }
+  icon(c, id, x + 11, y);
+  for (let i = 0; i < 3 && lv > 0; i++) { c.fillStyle = i < lv ? INK : 'rgba(29,35,53,0.25)'; c.beginPath(); c.arc(x + 25 + i * 5, y, 2, 0, 7); c.fill(); }
+  return w + 4;
+}
 
 // ------------------------------------------------------------------ frame
 export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: number) {
@@ -374,97 +373,70 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
   for (const n of g.nodes) {
     const k = known(g, n), v = nodeViews.get(n.id);
     if (k.tier === 'hidden') { if (v) { dispose(v.grp); nodeViews.delete(n.id); } continue; }
-    const live = k.tier === 'live', b = live ? n.b : g.intel[n.id].snap?.b || {};
-    const natQ = 0; // shields are drawn as a bubble instead
-    const laneQ = n.owner === PLAYER && n.lane ? Math.round((1 - n.lane.left / n.lane.total) * 24) : -1;
-    const specs = k.tier === 'detected' ? [] : live ? n.specs : g.intel[n.id].snap?.specs || [];
-    const researching = n.owner === PLAYER && !!n.research;
-    const sig = [k.tier, k.owner, JSON.stringify(b), natQ, laneQ, specs.join('.'), researching].join('|');
+    const live = k.tier === 'live', snap = g.intel[n.id].snap;
+    const view = (live || !snap ? n : { ...n, ...snap }) as GNode;
+    const ready = live && g.sides[n.owner] ? Math.max(0, slotsOf(g, n) - slotsBusy(g, n)) : 0;
+    const taskQ = n.owner === PLAYER && n.task ? Math.round((1 - n.task.left / n.task.total) * 24) : -1;
+    const specs = k.tier === 'detected' ? [] : g.sides[view.owner] ? activeSpecs(g, view) : [];
+    const lit = n.owner === PLAYER && n.spec === 'lab' && labRunning(g, n);
+    const sig = [k.tier, k.owner, view.lv, view.sh, view.spec, view.missile, ready, taskQ, specs.map(i => `${i}${g.specs[i].up ? 'u' : ''}`).join('.'), lit, g.sides[view.owner] ? slotsOf(g, view) : 0].join('|');
     if (v && v.sig === sig) continue;
     if (v) dispose(v.grp);
-    const view = buildNode(g, live ? n : ({ ...n, b } as GNode), k.tier, k.owner, researching), r = nodeR(n);
-    if (natQ > 0) view.grp.add(ring(r * 1.2, r * 1.34, '#bfe3ff', 0.08, Math.PI / 2, (natQ / 16) * Math.PI * 2));
-    if (laneQ >= 0) view.grp.add(ring(r * 1.74, r * 1.9, GOLD, 0.08, Math.PI / 2, Math.max(0.05, (laneQ / 24) * Math.PI * 2)));
-    // specialists stand as statues in a row in front of the node
-    const statues: NodeView['statues'] = [], shown = specs.slice(0, 4), gap = 2.5;
-    shown.forEach((id, i) => {
-      const sp = g.specs[id], x = (i - (shown.length - 1) / 2) * gap, zz = r * 1.55 + 1.6 + (i % 2) * 0.4;
-      const st = statue(id === g.cmdSpec ? GOLD : SPECS[sp.def].color, id === g.cmdSpec); st.position.set(x, 0, zz); view.grp.add(st);
+    const built = buildNode(g, view, k.tier, k.owner, ready), r = nodeR(n);
+    if (taskQ >= 0) built.grp.add(ring(r * 1.74, r * 1.9, GOLD, 0.08, Math.PI / 2, Math.max(0.05, (taskQ / 24) * Math.PI * 2)));
+    const statues: NodeView['statues'] = [], gap = 2.5;
+    specs.slice(0, 5).forEach((id, i) => {
+      const sp = g.specs[id], x = (i - (Math.min(specs.length, 5) - 1) / 2) * gap, zz = r * 1.55 + 1.6 + (i % 2) * 0.4;
+      const st = statue(id === g.cmdSpec ? GOLD : SPECS[sp.def].color, id === g.cmdSpec, 1, sp.up); st.position.set(x, 0, zz); built.grp.add(st);
       statues.push({ spec: id, x, z: zz });
     });
-    view.grp.position.set(n.x, 0, n.y);
-    scene.add(view.grp);
-    nodeViews.set(n.id, { sig, ...view, statues });
+    built.grp.position.set(n.x, 0, n.y);
+    scene.add(built.grp);
+    nodeViews.set(n.id, { sig, ...built, statues });
   }
   for (const [id, v] of nodeViews) {
     if (v.spin) v.spin.rotation.y = now / 6000;
-    if (v.orb) { v.orb.rotation.y = now / 400; v.orb.position.y = 3.0 + 0.2 * Math.sin(now / 300); }
+    if (v.orb) { v.orb.rotation.y = now / 400; v.orb.position.y = 3.3 + 0.2 * Math.sin(now / 300); }
     const n = g.nodes[id];
     const bub = v.grp.getObjectByName('bubble') as THREE.Mesh | undefined;
-    if (bub) { const k = known(g, n), sh = k.tier === 'live' ? n.shields + aegis(g, n) : 0, mx = Math.max(1, shieldMax(g, n) + aegis(g, n)); (bub.material as THREE.MeshLambertMaterial).opacity = sh > 0.5 ? 0.06 + 0.2 * Math.min(1, sh / mx) : 0; bub.visible = sh > 0.5; }
+    if (bub) { const sh = known(g, n).tier === 'live' ? n.shields + aegis(g, n) : 0, mx = Math.max(1, shieldMax(g, n) + aegis(g, n)); (bub.material as THREE.MeshLambertMaterial).opacity = sh > 0.5 ? 0.06 + 0.2 * Math.min(1, sh / mx) : 0; bub.visible = sh > 0.5; }
     for (const st of v.statues) { const p = toScreen(n.x + st.x, n.y + st.z, STATUE_H * 0.65); spots.push({ x: p.x, y: p.y, r: Math.max(12, z * 1.6), spec: st.spec }); }
   }
 
   // --- corridors: glowing tubes between linked nodes
-  const csig = g.corridors.map(c => `${c.a}-${c.b}-${c.owner}-${c.until ? 1 : 0}`).join(',');
+  const csig = g.corridors.map(c => `${c.a}-${c.b}-${c.owner}`).join(',');
   if (csig !== corridorSig) {
     if (corridorGrp) dispose(corridorGrp);
     corridorGrp = new THREE.Group(); corridorSig = csig;
     for (const c of g.corridors) {
       const a = g.nodes[c.a], b = g.nodes[c.b], col = sideColor(g, c.owner), len = Math.hypot(b.x - a.x, b.y - a.y);
       const tube = new THREE.Group();
-      tube.add(mesh(new THREE.CylinderGeometry(0.35, 0.35, len, 6, 1, true), flat(col, c.until ? 0.55 : 0.95)));
-      tube.add(mesh(new THREE.CylinderGeometry(0.9, 0.9, len, 8, 1, true), flat(col, 0.18)));
+      tube.add(mesh(new THREE.CylinderGeometry(0.35, 0.35, len, 6, 1, true), flat(col, 0.95)), mesh(new THREE.CylinderGeometry(0.9, 0.9, len, 8, 1, true), flat(col, 0.18)));
       tube.position.set((a.x + b.x) / 2, 0.8, (a.y + b.y) / 2);
-      tube.rotation.set(0, -Math.atan2(b.y - a.y, b.x - a.x), Math.PI / 2, 'YXZ'); // lay the tube along the line from a to b
+      tube.rotation.set(0, -Math.atan2(b.y - a.y, b.x - a.x), Math.PI / 2, 'YXZ');
       corridorGrp.add(tube);
     }
     scene.add(corridorGrp);
   }
 
-  // --- ships: on a dock pad, circling in orbit, or in flight
-  const wanted = new Set<number>(), flying: { s: Ship; seen: number }[] = [];
-  const parked = new Map<number, Ship[]>();
-  for (const s of g.ships) {
-    if (s.at >= 0) { if (known(g, g.nodes[s.at]).tier === 'live') { if (!parked.has(s.at)) parked.set(s.at, []); parked.get(s.at)!.push(s); } }
-    else { const seen = shipSeen(g, s); if (seen) flying.push({ s, seen }); }
+  // --- everything in flight
+  const wanted = new Set<number>(), flying: { f: Fleet; seen: number }[] = [];
+  for (const f of g.fleets) {
+    const seen = fleetSeen(g, f);
+    if (!seen) continue;
+    flying.push({ f, seen });
+    wanted.add(f.id);
+    const crewIds = seen === 2 ? f.specs : [];
+    const sig = `${f.owner}|${f.lane ? 1 : 0}|${f.missile ? 1 : 0}|${crewIds.join('.')}`;
+    let v = fleetViews.get(f.id);
+    if (!v || v.sig !== sig) { if (v) dispose(v.grp); v = { sig, grp: fleetMesh(g, f, crewIds), statues: crewIds.slice() }; scene.add(v.grp); fleetViews.set(f.id, v); }
+    const to = g.nodes[f.to], model = v.grp.getObjectByName('model')!, sh = v.grp.getObjectByName('shadow')!;
+    v.grp.position.set(f.x, 0, f.y); v.grp.rotation.y = -Math.atan2(to.y - f.y, to.x - f.x);
+    model.position.y = f.lane ? 0.8 : f.missile ? 5 : 3.4 + 0.25 * Math.sin(now / 400 + f.id);
+    if (f.lane) model.rotation.y = now / 300;
+    sh.visible = !f.lane; sh.position.y = 0.04;
   }
-  const place = (s: Ship, seen: number): THREE.Group => {
-    wanted.add(s.id);
-    const crewIds = seen === 2 ? s.specs : [];
-    const crew = crewIds.map(i => (i === g.cmdSpec ? GOLD : SPECS[g.specs[i].def].color));
-    const sig = `${s.owner}|${s.lane ? 1 : 0}|${crewIds.join('.')}`;
-    let v = shipViews.get(s.id);
-    if (!v || v.sig !== sig) { if (v) dispose(v.grp); v = { sig, grp: shipMesh(s.owner === 0 ? '#d9d9d9' : sideColor(g, s.owner), crew, !!s.lane), statues: crewIds.slice() }; scene.add(v.grp); shipViews.set(s.id, v); }
-    return v.grp;
-  };
-  const crewSpots = (s: Ship, hgt: number) => { const v = shipViews.get(s.id); if (!v) return; v.statues.forEach((id, i) => { const p = toScreen(s.x, s.y, hgt + 1.2); spots.push({ x: p.x - i * 10, y: p.y, r: 12, spec: id }); }); };
-  for (const [nid, list] of parked) {
-    const n = g.nodes[nid], nd = Math.min(n.kind === 'planet' ? 6 : 4, docks(n)), r = nodeR(n);
-    list.sort((a, b) => a.seq - b.seq).slice(0, 8).forEach((s, i) => {
-      const grp = place(s, 2), model = grp.getObjectByName('model')!, sh = grp.getObjectByName('shadow')!;
-      if (i < nd) { // docked: nose out on its pad; a loading ship lifts off the pad
-        const d = dockPos(n, i), lift = s.loadUntil > 0 ? 0.5 + 0.3 * Math.sin(now / 150) : 0;
-        grp.position.set(n.x + d.x, 0, n.y + d.z); grp.rotation.y = -d.a;
-        model.position.y = d.y + lift; model.rotation.x = 0; sh.visible = n.kind === 'planet'; sh.position.y = 0.04;
-        const p = toScreen(n.x + d.x, n.y + d.z, d.y + 1.4);
-        (shipViews.get(s.id)?.statues || []).forEach((id, j) => spots.push({ x: p.x - j * 10, y: p.y, r: 12, spec: id }));
-      } else { // orbiting: no free dock, cargo stays aboard
-        const a = now / 1500 + (i - nd) * 1.6, rad = r * 3.1;
-        grp.position.set(n.x + Math.cos(a) * rad, 0, n.y + Math.sin(a) * rad); grp.rotation.y = -(a + Math.PI / 2);
-        model.position.y = bodyMid(n) + r * 0.9; model.rotation.x = -0.45; sh.visible = false;
-      }
-    });
-  }
-  for (const { s, seen } of flying) {
-    const grp = place(s, seen), to = g.nodes[s.to], model = grp.getObjectByName('model')!;
-    grp.position.set(s.x, 0, s.y); grp.rotation.y = -Math.atan2(to.y - s.y, to.x - s.x);
-    const hgt = s.lane ? 0.8 : 3 + 0.25 * Math.sin(now / 400 + s.id);
-    model.position.y = hgt; model.rotation.x = 0; if (s.lane) model.rotation.y = now / 300;
-    const fs = grp.getObjectByName('shadow')!; fs.visible = !s.lane; fs.position.y = 0.04;
-    crewSpots(s, hgt);
-  }
-  for (const [id, v] of shipViews) if (!wanted.has(id)) { dispose(v.grp); shipViews.delete(id); }
+  for (const [id, v] of fleetViews) if (!wanted.has(id)) { dispose(v.grp); fleetViews.delete(id); }
 
   // --- selection and range rings on the plane
   const selNode = ui.sel?.type === 'node' ? g.nodes[ui.sel.id] : null;
@@ -476,22 +448,21 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
   }
   renderer!.render(scene, camera);
 
-  // --- overlay: trails, corridor works, flags, names, icons, tags
+  // --- overlay: trails, corridor works, flags, names, role chips, tags
   ctx.clearRect(0, 0, w, h);
   ctx.lineCap = 'round';
-  for (const { s } of flying) {
-    if (s.lane) continue;
-    const to = g.nodes[s.to], a = toScreen(s.x, s.y), b = toScreen(to.x, to.y), col = s.owner === 0 ? '#d9d9d9' : sideColor(g, s.owner);
+  for (const { f } of flying) {
+    if (f.lane) continue;
+    const to = g.nodes[f.to], a = toScreen(f.x, f.y), b = toScreen(to.x, to.y), col = f.missile ? '#d2604a' : f.owner === 0 ? '#d9d9d9' : sideColor(g, f.owner);
     ctx.strokeStyle = hexA(col, 0.8); ctx.lineWidth = 2.5; ctx.setLineDash([0.1, 9]); ctx.lineDashOffset = -now / 50;
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
   }
-  for (const n of g.nodes) { // corridors under construction: dashed line, solid up to the progress made
+  for (const n of g.nodes) { // rally flow and corridors under construction
     if (n.owner !== PLAYER) continue;
-    for (const t of [n.lane, ...n.queue]) {
-      if (!t || t.kind !== 'corridor') continue;
-      const o = g.nodes[+t.id], a = toScreen(n.x, n.y, 0.8), b = toScreen(o.x, o.y, 0.8), f = t === n.lane ? 1 - t.left / t.total : 0;
+    if (n.task?.kind === 'corridor') {
+      const o = g.nodes[+n.task.id], a = toScreen(n.x, n.y, 0.8), b = toScreen(o.x, o.y, 0.8), f = 1 - n.task.left / n.task.total;
       ctx.strokeStyle = hexA(PAPER, 0.4); ctx.lineWidth = 2; ctx.setLineDash([4, 6]); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
-      if (f > 0) { ctx.strokeStyle = GOLD; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f); ctx.stroke(); }
+      ctx.strokeStyle = GOLD; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f); ctx.stroke();
     }
   }
   if (ui.targeting && ui.from >= 0 && ui.hover >= 0 && ui.hover !== ui.from) {
@@ -507,8 +478,8 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
     const col = sil ? UNKNOWN : k.owner === 0 ? NEUTRAL : sideColor(g, k.owner);
     const pr = nodeR(n) * z;
     if (ui.targeting && n.id !== ui.from && (ui.glow ? ui.glow.has(n.id) : canTarget(g, n) || n.owner === PLAYER)) {
-      const gl = ui.glow ? GOLD : PAPER; ctx.strokeStyle = hexA(gl, 0.45 + 0.35 * Math.sin(now / 250)); ctx.lineWidth = ui.glow ? 4 : 2.5;
-      if (ui.glow) { ctx.shadowColor = GOLD; ctx.shadowBlur = 14; }
+      const hot = ui.hover === n.id;
+      ctx.strokeStyle = hexA(GOLD, hot ? 1 : 0.45 + 0.35 * Math.sin(now / 250)); ctx.lineWidth = hot ? 5 : 3.5; ctx.shadowColor = GOLD; ctx.shadowBlur = hot ? 22 : 12;
       ctx.beginPath(); ctx.ellipse(gp.x, gp.y, pr * 2.3, pr * 2.3 * TILT, 0, 0, 7); ctx.stroke(); ctx.shadowBlur = 0;
     }
     let ny = toScreen(n.x, n.y + nodeR(n) * 1.55 + 3.4).y + 8;
@@ -521,54 +492,41 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
       flag(ctx, top.x, top.y + 2, col, glyph + (stale ? '~' : '') + k.drones, n.home || n.capital || n.citadel, stale, now, n.id);
       let tx = gp.x + pr * 1.7 + 8; const ty = toScreen(n.x, n.y, bodyMid(n)).y;
       const tag = (t: string, bg: string) => { ctx.fillStyle = bg; ctx.beginPath(); ctx.roundRect(tx - 8, ty - 8, 16, 16, 4); ctx.fill(); ctx.fillStyle = INK; ctx.font = '800 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(t, tx, ty + 0.5); tx += 19; };
+      if (n.owner === PLAYER && n.rally) tag('⚑', '#6cc5a0');
       if (n.event) tag('!', GOLD);
       if (n.offer && n.owner !== PLAYER) tag('☺', '#e9a9c9');
       if (n.hold) tag('◷', '#a9dcec');
       if (n.owner === PLAYER && n.prisoners.length) tag('⛓', '#e6a183');
       if (cmd && cmd.held && cmd.node === n.id) tag('★', '#e2604e');
-      // a dashed orbit lane appears whenever ships are circling without a dock
-      const all = parked.get(n.id) || [], ndk = Math.min(n.kind === 'planet' ? 6 : 4, docks(n));
-      if (all.length > ndk) {
-        const rr = nodeR(n) * 3.1, hy = bodyMid(n) + nodeR(n) * 0.9; ctx.strokeStyle = hexA(PAPER, 0.45); ctx.lineWidth = 1.5; ctx.setLineDash([4, 6]); ctx.beginPath();
-        for (let i = 0; i <= 40; i++) { const a = (i / 40) * Math.PI * 2, q = toScreen(n.x + Math.cos(a) * rr, n.y + Math.sin(a) * rr, hy); ctx[i ? 'lineTo' : 'moveTo'](q.x, q.y); }
-        ctx.stroke(); ctx.setLineDash([]);
-      }
     }
     if (z > 4.5) {
       ctx.font = '700 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
       ctx.strokeStyle = 'rgba(29,35,53,0.7)'; ctx.lineWidth = 3; ctx.strokeText(n.name.toUpperCase(), gp.x, ny);
       ctx.fillStyle = hexA(PAPER, sil ? 0.45 : 0.85); ctx.fillText(n.name.toUpperCase(), gp.x, ny);
-      ny += 15;
+      ny += 17;
     }
-    // structure icons: what is built here, at a glance
-    if (!sil && z > 3.2) {
-      const b = k.tier === 'live' ? n.b : g.intel[n.id].snap?.b || {};
-      const list = ICON_ORDER.filter(id => (b[id] || 0) > 0);
-      const cw = (id: string) => ((b[id] || 0) > 1 ? 30 : 20);
-      const total = list.reduce((s, id) => s + cw(id) + 3, -3);
-      let x0 = gp.x - total / 2;
+    // role chips: level, shield and specialty, readable without opening the panel
+    if (!sil && z > 3.2 && k.owner !== 0) {
+      const v = (k.tier === 'live' ? n : { ...n, ...g.intel[n.id].snap }) as GNode;
+      const wTot = 44 + (v.sh ? 44 : 0) + (v.spec ? 26 : 0) - 4;
+      let x0 = gp.x - wTot / 2;
       ctx.globalAlpha = stale ? 0.65 : 1;
-      for (const id of list) {
-        const wch = cw(id), res = (id === 'lab' || id === 'slab') && n.owner === PLAYER && n.research;
-        ctx.fillStyle = BCOL[id]; ctx.beginPath(); ctx.roundRect(x0, ny - 9, wch, 18, 5); ctx.fill();
-        if (res) { const side = g.sides[PLAYER], p = (side.techProg[n.research!] || 0) / TECH_TIME[TECHS[n.research!].tier]; ctx.strokeStyle = '#9fe0ff'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.roundRect(x0 - 1.5, ny - 10.5, wch + 3, 21, 6); ctx.stroke(); ctx.fillStyle = INK; ctx.fillRect(x0 + 2, ny + 6, (wch - 4) * Math.min(1, p), 2); }
-        icon(ctx, id, x0 + 10, ny);
-        if ((b[id] || 0) > 1) { ctx.fillStyle = INK; ctx.font = '800 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(b[id]), x0 + 23, ny + 0.5); }
-        x0 += wch + 3;
-      }
+      x0 += chipLv(ctx, n.kind === 'planet' ? 'mine' : 'barracks', v.lv, x0, ny);
+      if (v.sh) x0 += chipLv(ctx, 'shield', v.sh, x0, ny);
+      if (v.spec) chipLv(ctx, v.spec, 0, x0, ny, (v.spec === 'lab' && n.owner === PLAYER && labRunning(g, n)) || (v.spec === 'silo' && v.missile > 0));
       ctx.globalAlpha = 1;
-    }
+    } else if (!sil && z > 3.2 && n.sh) { ctx.globalAlpha = stale ? 0.65 : 1; chipLv(ctx, 'shield', (k.tier === 'live' ? n.sh : g.intel[n.id].snap?.sh) || 0, gp.x - 20, ny); ctx.globalAlpha = 1; }
   }
-  for (const { s, seen } of flying) {
-    const p = toScreen(s.x, s.y, s.lane ? 2.2 : 4.4), col = s.owner === 0 ? '#d9d9d9' : sideColor(g, s.owner);
-    if (ui.sel?.type === 'ship' && ui.sel.id === s.id) { const gp = toScreen(s.x, s.y); ctx.strokeStyle = PAPER; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(gp.x, gp.y, 16, 16 * TILT, 0, 0, 7); ctx.stroke(); }
-    flag(ctx, p.x, p.y, col, (seen === 2 ? String(s.drones) : '?'), false, false, now, s.id);
-    // crew tokens next to the flag
-    if (seen === 2) s.specs.forEach((id, i) => {
-      const cx = p.x - 9 - i * 15, cy = p.y - 12, sc = id === g.cmdSpec ? GOLD : SPECS[g.specs[id].def].color;
-      ctx.fillStyle = sc; ctx.beginPath(); ctx.arc(cx, cy, 7, 0, 7); ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 1.5; ctx.stroke();
+  for (const { f, seen } of flying) {
+    if (f.missile) continue;
+    const p = toScreen(f.x, f.y, f.lane ? 2.2 : 5.2), col = f.owner === 0 ? '#d9d9d9' : sideColor(g, f.owner);
+    if (ui.sel?.type === 'fleet' && ui.sel.id === f.id) { const gp = toScreen(f.x, f.y); ctx.strokeStyle = PAPER; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(gp.x, gp.y, 18, 18 * TILT, 0, 0, 7); ctx.stroke(); }
+    if (f.drones > 0 || seen < 2) flag(ctx, p.x, p.y, col, seen === 2 ? String(f.drones) : '?', false, false, now, f.id);
+    if (seen === 2) f.specs.forEach((id, i) => { // crew tokens beside the flag
+      const cx = p.x - 10 - i * 16, cy = p.y - 12, sc = id === g.cmdSpec ? GOLD : SPECS[g.specs[id].def].color;
+      ctx.fillStyle = sc; ctx.beginPath(); ctx.arc(cx, cy, 7.5, 0, 7); ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 1.5; ctx.stroke();
       ctx.fillStyle = INK; ctx.font = '800 8px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(id === g.cmdSpec ? '★' : SPECS[g.specs[id].def].tag, cx, cy + 0.5);
-      spots.push({ x: cx, y: cy, r: 9, spec: id });
+      spots.push({ x: cx, y: cy, r: 10, spec: id });
     });
   }
 }
