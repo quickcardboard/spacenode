@@ -2,17 +2,20 @@ import type { Mods, Fx } from './types';
 
 // ---------------------------------------------------------------------------------------------
 // Specialists are passive. Each has a Power (adds to attack when aboard a fleet and to defence
-// where stationed), one passive effect, and an upgraded form earned by leading a winning attack.
-// Some carry a charged effect that fires on its own and then recharges.
+// where stationed), a Command number (how many Drones they can lead into an attack), one passive
+// effect, and five levels earned through battle: +1 Power at levels 2 and 4, the upgraded form at
+// level 3, mastery (the passive counts twice) at level 5, and +4 Command every level.
+// Some carry a charged effect that fires on its own when it fits and then recharges.
 //
 // Modifier keys (whole numbers unless noted):
 //   fleet:  atk  per4 (max bonus from +1 per 4 Drones)  pierce (shield ignored)  strike (defending
 //           Drones destroyed first)  surv (Drones saved)  vsNeutral  salvage (Ult per Drone killed)
-//           speed (fraction)  stealth  slotFree  medic
+//           speed (fraction)  stealth  slotFree  medic  retreat (a failed attack limps home)
 //   node:   def  shield (capacity)  regen (fraction)  inc (Ult/min)  research (points/min)
 //           prodSecs (seconds off each Drone)  free (Drones fed)  lance (attackers destroyed first)
 //           martyr  build (fraction faster)  upgCost  launchSpeed (fraction)  fov (fraction)
-//   side:   income  freeDrones  rp  warn  sigint  mobSlow  slots  rescue  offer  recruitFree
+//           train (Drones trained per minute)  mask (enemies cannot read this node)
+//   side:   income  freeDrones  rp  warn  sigint  mobSlow  slots  rescue  offer  recruitFree  cmdAll
 //           ransom  prisonInc  corridorMax  corridorCost  laneSpeed  specUpkeep  xp  powAll
 //           slotAdd  noOps  ties  refund  capUlt  capShield  cmdDouble  recruitUp
 // Side-wide sources (relics, research) may also use fleet and node keys: they then apply everywhere.
@@ -20,9 +23,10 @@ import type { Mods, Fx } from './types';
 
 export interface SpecDef {
   id: string; name: string; tag: string; color: string; role: string; pow: number;
+  cmd?: number; // Command at level 1 (default CFG.cmdBase)
   starter?: boolean; sig?: string; hidden?: boolean;
   text: string; loc?: Mods; glob?: Mods;
-  charge?: { on: 'attack' | 'defend' | 'fall'; cd: number; mods: Mods; text: string };
+  charge?: { on: 'attack' | 'defend' | 'fall' | 'fail'; cd: number; mods: Mods; text: string };
   up: { text: string; pow?: number; loc?: Mods; glob?: Mods; cd?: number };
 }
 
@@ -31,7 +35,7 @@ export const SPECS: Record<string, SpecDef> = {};
 const S = (d: SpecDef) => (SPECS[d.id] = d);
 
 // --- starter-eligible identities
-S({ id: 'admiral', name: 'Admiral', tag: 'Ad', color: C.fleet, role: 'Fleet speed', pow: 2, starter: true,
+S({ id: 'admiral', name: 'Admiral', tag: 'Ad', color: C.fleet, role: 'Fleet speed', pow: 2, cmd: 10, starter: true,
   text: 'Their fleet flies 25% faster.', loc: { speed: 0.25 }, up: { text: 'Their fleet flies 50% faster.', loc: { speed: 0.25 } } });
 S({ id: 'engineer', name: 'Engineer', tag: 'En', color: C.eco, role: 'Construction', pow: 1, starter: true,
   text: 'Upgrades here build twice as fast and cost 10 less.', loc: { build: 1, upgCost: 10 }, up: { text: 'Upgrades here cost 20 less.', loc: { upgCost: 10 } } });
@@ -39,11 +43,11 @@ S({ id: 'quartermaster', name: 'Quartermaster', tag: 'Qm', color: C.eco, role: '
   text: 'Feeds 4 Drones at their node: they cost no upkeep.', loc: { free: 4 }, up: { text: 'Feeds 7 Drones.', loc: { free: 3 } } });
 S({ id: 'scout', name: 'Scout', tag: 'Sc', color: C.intel, role: 'Vision', pow: 1, starter: true,
   text: 'Their node or fleet sees 40% further.', loc: { fov: 0.4 }, up: { text: 'Also reads the strength of every fleet you detect.', glob: { sigint: 1 } } });
-S({ id: 'tactician', name: 'Tactician', tag: 'Ta', color: C.war, role: 'Massed attack', pow: 3, starter: true,
+S({ id: 'tactician', name: 'Tactician', tag: 'Ta', color: C.war, role: 'Massed attack', pow: 3, cmd: 12, starter: true,
   text: '+1 attack per 4 Drones in their fleet (up to +3).', loc: { per4: 3 }, up: { text: 'Up to +5.', loc: { per4: 2 } } });
 
 // --- found on neutral planets and stations
-S({ id: 'vanguard', name: 'Vanguard', tag: 'Va', color: C.war, role: 'Shock troops', pow: 4,
+S({ id: 'vanguard', name: 'Vanguard', tag: 'Va', color: C.war, role: 'Shock troops', pow: 4, cmd: 10,
   text: '+1 attack.', loc: { atk: 1 }, up: { text: 'Power 5.', pow: 1 } });
 S({ id: 'sentinel', name: 'Sentinel', tag: 'Se', color: C.def, role: 'Defence', pow: 2,
   text: '+3 defence where stationed.', loc: { def: 3 }, up: { text: '+5 defence.', loc: { def: 2 } } });
@@ -53,7 +57,7 @@ S({ id: 'saboteur', name: 'Saboteur', tag: 'Sb', color: C.intel, role: 'First st
   text: 'Destroys 2 defending Drones before the battle.', loc: { strike: 2 }, up: { text: 'Destroys 4.', loc: { strike: 2 } } });
 S({ id: 'diplomat', name: 'Diplomat', tag: 'Di', color: C.eco, role: 'Neutral expansion', pow: 1,
   text: '+4 attack against neutral nodes.', loc: { vsNeutral: 4 }, up: { text: '+7 against neutral nodes.', loc: { vsNeutral: 3 } } });
-S({ id: 'scientist', name: 'Scientist', tag: 'Sn', color: C.intel, role: 'Research', pow: 1,
+S({ id: 'scientist', name: 'Scientist', tag: 'Sn', color: C.intel, role: 'Research', pow: 1, cmd: 4,
   text: '+2 research per minute.', loc: { research: 2 }, up: { text: '+4 research per minute.', loc: { research: 2 } } });
 S({ id: 'medic', name: 'Medic', tag: 'Me', color: C.def, role: 'Rescue', pow: 1,
   text: 'When their node or fleet is defeated, everyone with them escapes home.', charge: { on: 'fall', cd: 180, mods: { medic: 1 }, text: 'Escape (recharges in 3:00)' },
@@ -69,8 +73,8 @@ S({ id: 'castellan', name: 'Castellan', tag: 'Cs', color: C.def, role: 'Shields'
 S({ id: 'martyr', name: 'Martyr', tag: 'Ma', color: C.def, role: 'Attrition', pow: 1,
   text: 'If their node falls, the attacker loses 5 more Drones.', loc: { martyr: 5 }, up: { text: 'The attacker loses 8 more.', loc: { martyr: 3 } } });
 S({ id: 'echo', name: 'Echo', tag: 'Ec', color: C.odd, role: 'Amplifier', pow: 1,
-  text: 'Doubles the passive of the specialist beside them.', up: { text: 'Power 3.', pow: 2 } });
-S({ id: 'broker', name: 'Broker', tag: 'Br', color: C.eco, role: 'Income', pow: 1,
+  text: 'Doubles the passive of the highest-Power specialist with them.', up: { text: 'Power 3.', pow: 2 } });
+S({ id: 'broker', name: 'Broker', tag: 'Br', color: C.eco, role: 'Income', pow: 1, cmd: 4,
   text: '+4 Ultanium per minute.', glob: { income: 4 }, up: { text: '+7 per minute.', glob: { income: 3 } } });
 S({ id: 'navigator', name: 'Navigator', tag: 'Na', color: C.fleet, role: 'Launch control', pow: 1,
   text: 'Fleets launched from their node fly 30% faster.', loc: { launchSpeed: 0.3 }, up: { text: '60% faster.', loc: { launchSpeed: 0.3 } } });
@@ -92,13 +96,22 @@ S({ id: 'smuggler', name: 'Smuggler', tag: 'Sm', color: C.fleet, role: 'Logistic
 S({ id: 'strategist', name: 'Strategist', tag: 'St', color: C.war, role: 'Decisive strike', pow: 2,
   text: 'Their next attack hits for +4.', charge: { on: 'attack', cd: 120, mods: { atk: 4 }, text: 'Decisive strike (recharges in 2:00)' },
   up: { text: 'Recharges in 1:00.', cd: 60 } });
-S({ id: 'warden', name: 'Warden', tag: 'Wd', color: C.def, role: 'Survivors', pow: 2,
+S({ id: 'sergeant', name: 'Drill Sergeant', tag: 'Dr', color: C.war, role: 'Training', pow: 1,
+  text: 'Trains a Drone at their node every 30 s (while your production runs).', loc: { train: 2 }, up: { text: 'Every 20 s.', loc: { train: 1 } } });
+S({ id: 'rearguard', name: 'Rearguard', tag: 'Rg', color: C.def, role: 'Retreat', pow: 2, cmd: 10,
+  text: 'If their attack fails, the fleet retreats home with half its Drones instead of being lost.', charge: { on: 'fail', cd: 150, mods: { retreat: 1 }, text: 'Retreat (recharges in 2:30)' },
+  up: { text: 'Recharges in 1:15.', cd: 75 } });
+S({ id: 'illusionist', name: 'Illusionist', tag: 'Il', color: C.intel, role: 'Deception', pow: 1,
+  text: 'Their node cannot be read: enemies see it only as detected, and the Coalition overestimates it.', loc: { mask: 1 }, up: { text: 'Also +3 defence there.', loc: { def: 3 } } });
+S({ id: 'legate', name: 'Legate', tag: 'Lg', color: C.war, role: 'Command', pow: 1, cmd: 18,
+  text: 'A born organiser: commands 18 Drones at level 1.', up: { text: 'Power 3.', pow: 2 } });
+S({ id: 'warden', name: 'Warden', tag: 'Wd', color: C.def, role: 'Survivors', pow: 2, cmd: 10,
   text: 'Their fleet loses 2 fewer Drones when it wins.', loc: { surv: 2 }, up: { text: '4 fewer.', loc: { surv: 2 } } });
 
 // --- signature specialists: reward for capturing a faction's Warlord
 S({ id: 'ironmonger', name: 'Ironmonger', tag: 'Im', color: '#c98a3c', role: 'Ferrum signature', pow: 2, sig: 'ferrum',
   text: 'Shields here hold 4 more; +2 defence.', loc: { shield: 4, def: 2 }, up: { text: 'Shields hold 6 more.', loc: { shield: 2 } } });
-S({ id: 'berserker', name: 'Berserker', tag: 'Bs', color: '#d2604a', role: 'Crimson signature', pow: 4, sig: 'crimson',
+S({ id: 'berserker', name: 'Berserker', tag: 'Bs', color: '#d2604a', role: 'Crimson signature', pow: 4, cmd: 14, sig: 'crimson',
   text: '+3 attack, but their fleet loses 1 more Drone.', loc: { atk: 3, surv: -1 }, up: { text: '+5 attack.', loc: { atk: 2 } } });
 S({ id: 'lens', name: 'Lens', tag: 'Ln', color: '#e3c565', role: 'Lumen signature', pow: 2, sig: 'lumen',
   text: 'Lances destroy 3 Drones of every fleet attacking their node.', loc: { lance: 3 }, up: { text: 'Lances destroy 5.', loc: { lance: 2 } } });
@@ -110,7 +123,7 @@ S({ id: 'wayfinder', name: 'Wayfinder', tag: 'Wf', color: '#6ea6d6', role: 'Drif
 // --- Coalition only
 S({ id: 'warlord', name: 'Warlord', tag: 'W', color: '#ffffff', role: 'Faction leader', pow: 4, hidden: true, text: '+2 defence at the capital.', loc: { def: 2 }, up: { text: '' } });
 S({ id: 'archon', name: 'Archon', tag: 'A', color: '#e07aa0', role: 'Coalition Commander', pow: 6, hidden: true, text: '+3 defence at the Citadel.', loc: { def: 3 }, up: { text: '' } });
-S({ id: 'captain', name: 'Captain', tag: 'Cp', color: '#aab2c0', role: 'Coalition fleet leader', pow: 1, hidden: true, text: 'Leads a Coalition fleet.', up: { text: '' } });
+S({ id: 'captain', name: 'Captain', tag: 'Cp', color: '#aab2c0', role: 'Coalition fleet leader', pow: 1, hidden: true, text: 'Leads a Coalition fleet. Commands more Drones as mobilization rises.', up: { text: '' } });
 
 export const POOL = Object.values(SPECS).filter(s => !s.sig && !s.hidden).map(s => s.id);
 export const STARTERS = Object.values(SPECS).filter(s => s.starter).map(s => s.id);
@@ -139,7 +152,7 @@ export const PERKS: PerkDef[] = [
   { id: 'survivor', name: 'Survivor', desc: 'Commander\'s fleet loses 2 fewer Drones when it wins.', loc: { surv: 2 } },
   { id: 'farsight', name: 'Far Sight', desc: 'All your nodes see 15% further.', glob: { fov: 0.15 } },
   { id: 'requisition', name: 'Requisition', desc: 'Every upgrade costs 8 less.', glob: { upgCost: 8 } },
-  { id: 'entourage', name: 'Entourage', desc: 'Nodes and fleets hold one more specialist.', glob: { slots: 1 } },
+  { id: 'entourage', name: 'Entourage', desc: 'Fleets carry one more specialist.', glob: { slots: 1 } },
   { id: 'sapper', name: 'Sapper', desc: 'Commander\'s attacks ignore 3 shield.', loc: { pierce: 3 } },
   { id: 'magnate', name: 'Magnate', desc: 'Every planet yields +1 Ultanium per minute.', glob: { inc: 1 } },
   { id: 'commissary', name: 'Commissary', desc: '6 of your Drones cost no upkeep.', glob: { freeDrones: 6 } },
@@ -174,14 +187,14 @@ R('contracts', 'Builder Contracts', 'uncommon', 'Every upgrade costs 10 less.', 
 R('lanes', 'Express Lanes', 'uncommon', 'Convoys travel 50% faster and every node holds one more corridor.', { laneSpeed: 0.5, corridorMax: 1 });
 R('sigil', 'Tiebreaker Sigil', 'rare', 'You win tied battles when attacking.', { ties: 1 });
 R('phoenix', 'Phoenix Clause', 'rare', 'Once every 3 minutes, a node capture refunds the Drones it cost.', { refund: 180 });
-R('chair', 'Fourth Chair', 'rare', 'Nodes and fleets hold one more specialist.', { slots: 1 });
+R('chair', 'Fourth Chair', 'rare', 'Fleets carry one more specialist.', { slots: 1 });
 R('crown', 'Hollow Crown', 'rare', 'Commander rescue window +90 s.', { rescue: 90 });
 R('stillness', 'Stillness Engine', 'rare', 'Coalition mobilization is 25% slower.', { mobSlow: 0.25 });
 R('twin', 'Twin Minds', 'rare', 'The Commander\'s passive effects count twice.', { cmdDouble: 1 });
 R('lance', 'Null Lance', 'rare', 'All your attacks ignore 3 shield.', { pierce: 3 });
 R('levy', 'Conscription Edict', 'rare', '12 of your Drones cost no upkeep.', { freeDrones: 12 });
 R('night', 'Long Night', 'rare', 'All of your fleets fly unseen.', { stealth: 1 });
-R('academy', 'War Academy', 'rare', 'New recruits arrive already upgraded.', { recruitUp: 1 });
+R('academy', 'War Academy', 'rare', 'New recruits arrive at level 3.', { recruitUp: 1 });
 R('college', 'Staff College', 'rare', 'Every specialist has +1 Power.', { powAll: 1 });
 
 // ---------------------------------------------------------------------------------------------
@@ -228,12 +241,12 @@ T('ciphers', 'Broken Ciphers', 'Intelligence', 5, 'posts', 'Coalition mobilizati
 T('panopticon', 'Panopticon', 'Intelligence', 6, 'sabotage', 'All nodes and fleets see 50% further; every attack destroys 1 more defender first.', { fov: 0.5, strike: 1 });
 T('academy', 'Officer Academy', 'Command', 1, undefined, 'Specialists cost half upkeep.', { specUpkeep: 0.5 });
 T('protocols', 'Command Protocols', 'Command', 2, 'academy', 'Commander gains 50% more experience; rescue window +45 s.', { xp: 0.5, rescue: 45 });
-T('integration', 'Command Integration', 'Command', 3, 'protocols', 'Nodes and fleets hold one more specialist.', { slots: 1 }, 'scouts');
+T('integration', 'Command Integration', 'Command', 3, 'protocols', 'Fleets carry one more specialist; every specialist commands 4 more Drones.', { slots: 1, cmdAll: 4 }, 'scouts');
 T('scouts', 'Talent Scouts', 'Command', 3, 'protocols', 'Every recruitment offers one more specialist.', { offer: 1 }, 'integration');
 T('college', 'War College', 'Command', 4, 'integration', 'Every specialist has +1 Power.', { powAll: 1 });
-T('veterancy', 'Veterancy', 'Command', 5, 'college', 'New recruits arrive already upgraded.', { recruitUp: 1 }, 'guard');
+T('veterancy', 'Veterancy', 'Command', 5, 'college', 'New recruits arrive at level 3.', { recruitUp: 1 }, 'guard');
 T('guard', 'Honour Guard', 'Command', 5, 'college', '+2 defence at every node; rescue window +60 s.', { def: 2, rescue: 60 }, 'veterancy');
-T('legends', 'Living Legends', 'Command', 6, 'veterancy', 'Every specialist has another +1 Power.', { powAll: 1 });
+T('legends', 'Living Legends', 'Command', 6, 'veterancy', 'Every specialist has another +1 Power and commands 6 more Drones.', { powAll: 1, cmdAll: 6 });
 
 // ---------------------------------------------------------------------------------------------
 // Coalition factions (three per run) and Archons (one per run)
@@ -250,19 +263,19 @@ export const FACTIONS: Record<string, FactionDef> = {
     techs: ['harmonics', 'mining', 'depth', 'automation'], specs: ['sentinel', 'castellan', 'engineer'] },
   crimson: { id: 'crimson', name: 'Crimson Warhost', color: '#d2604a', warlord: 'Warlord Ashka', sig: 'berserker',
     desc: 'Wave aggression. Thin defences, constant pressure.', tell: 'Builds Drones 2 s faster; +1 attack; strikes the nearest target often.',
-    mods: { prodSecs: 2, atk: 1 }, ai: { aggr: 1.4, expand: 110, react: 0.4, target: 'near', shield: 1, planet: 'foundry', station: 'bay' },
-    techs: ['drill', 'engines', 'siege', 'veterans'], specs: ['foreman', 'vanguard', 'tactician'] },
+    mods: { prodSecs: 2, atk: 1 }, ai: { aggr: 1.4, expand: 110, react: 0.4, target: 'near', shield: 1, planet: 'habitat', station: 'bay' },
+    techs: ['drill', 'engines', 'siege', 'veterans'], specs: ['sergeant', 'vanguard', 'tactician'] },
   lumen: { id: 'lumen', name: 'Lumen Technocracy', color: '#e3c565', warlord: 'Prime Calculator Ione', sig: 'lens',
     desc: 'Lance batteries thin every attacking fleet before it lands.', tell: 'Lances destroy 2 Drones of every attacking fleet; gains two technologies per stage.',
-    mods: { lance: 2 }, ai: { aggr: 0.8, expand: 170, react: 0.7, target: 'weak', shield: 2, planet: 'refinery', station: 'post' },
+    mods: { lance: 2 }, ai: { aggr: 0.8, expand: 170, react: 0.7, target: 'weak', shield: 2, planet: 'refinery', station: 'fortress' },
     techs: ['sigint', 'harmonics', 'drill', 'engines', 'siege', 'mining', 'veterans', 'sensors'], specs: ['scientist', 'sentinel', 'scout'] },
   veil: { id: 'veil', name: 'Veil Syndicate', color: '#9a7cc4', warlord: 'The Whisper', sig: 'phantom',
     desc: 'Unseen fleets that hunt your specialists.', tell: 'Fleets are invisible until inside full-intelligence range; targets nodes holding specialists.',
     mods: { stealth: 1, speed: 0.1 }, ai: { aggr: 1.0, expand: 160, react: 0.6, target: 'spec', shield: 2, planet: 'refinery', station: 'bay' },
-    techs: ['engines', 'drill', 'sigint', 'veterans'], specs: ['saboteur', 'ghost', 'pirate'] },
+    techs: ['engines', 'drill', 'sigint', 'veterans'], specs: ['saboteur', 'ghost', 'illusionist'] },
   drift: { id: 'drift', name: 'Drift Clans', color: '#6ea6d6', warlord: 'Clanmother Sura', sig: 'wayfinder',
     desc: 'Fast nomads who swallow neutral space.', tell: 'Fleets fly 40% faster; expands into neutral territory twice as often.',
-    mods: { speed: 0.4 }, ai: { aggr: 1.1, expand: 70, react: 0.8, target: 'near', shield: 1, planet: 'foundry', station: 'post' },
+    mods: { speed: 0.4 }, ai: { aggr: 1.1, expand: 70, react: 0.8, target: 'near', shield: 1, planet: 'habitat', station: 'fortress' },
     techs: ['engines', 'sensors', 'drill', 'mining'], specs: ['admiral', 'navigator', 'warden'] },
 };
 
@@ -279,6 +292,7 @@ export const ARCHONS: Record<string, ArchonDef> = {
 // ---------------------------------------------------------------------------------------------
 export interface EventChoice { label: string; desc: string; ult?: number; drones?: number; req?: string; fx: Fx[] }
 export interface EventDef { id: string; name: string; text: string; on: 'planet' | 'station' | 'any'; choices: EventChoice[] }
+// Every event resolved on a station also recovers one archive fragment (see LORE below).
 export const EVENTS: Record<string, EventDef> = {};
 const E = (id: string, name: string, on: EventDef['on'], text: string, choices: EventChoice[]) => (EVENTS[id] = { id, name, on, text, choices });
 
@@ -342,3 +356,46 @@ E('deserters', 'Coalition Deserters', 'any', 'A squadron in Coalition colours po
   { label: 'Debrief them', desc: 'Reveal every node within 200 units and set mobilization back 10%.', fx: [['reveal', 200], ['mobil', -0.1]] },
   { label: 'Inquisitor takes their officers', desc: 'Choose one of three specialists.', req: 'inquisitor', fx: [['spec']] },
 ]);
+
+// --- station events that belong to the story
+E('relay', 'Dormant Lattice Relay', 'station', 'A relay mast older than the station bolted around it. When your crew touches the console, every Drone aboard turns to face it.', [
+  { label: 'Cut it out of the Lattice', desc: 'Coalition mobilization set back by a quarter of a stage.', ult: 15, fx: [['mobil', -0.25]] },
+  { label: 'Listen in', desc: 'Reveal every node within 240 units.', fx: [['reveal', 240]] },
+  { label: 'Strip the mast', desc: 'Gain 35 Ultanium.', fx: [['ult', 35]] },
+]);
+E('choir', 'The Silent Choir', 'station', 'A hold stacked floor to ceiling with Ultanium boules. They are warm. When the lights fail, they glow in a rhythm, like breathing.', [
+  { label: 'Wake them as Drones', desc: 'Gain 7 Drones here.', fx: [['drones', 7]] },
+  { label: 'Lay them to rest', desc: 'Choose a common relic. Your Commander gains 6 experience.', fx: [['relic', 'common'], ['xp', 6]] },
+  { label: 'Let the Scientist listen', desc: 'Choose a technology.', req: 'scientist', fx: [['tech']] },
+]);
+E('embassy', 'Concord Embassy', 'station', 'Flags of forty worlds, faded to the same grey. The ambassador\'s chair still faces the door, as if someone were expected.', [
+  { label: 'Read the treaties', desc: 'Choose an uncommon relic.', ult: 20, fx: [['relic', 'uncommon']] },
+  { label: 'Hold the embassy', desc: 'Hold for 90 s with 4 Drones: choose one of three specialists.', fx: [['hold', 90, 4, [['spec']]]] },
+  { label: 'Sell the archive', desc: 'Gain 40 Ultanium.', fx: [['ult', 40]] },
+]);
+E('blackbox', 'Black Box of the Pilgrim', 'station', 'A courier wreck, its recorder still running a single message on a loop: a set of coordinates, and the words "it is not him".', [
+  { label: 'Follow the coordinates', desc: 'Reveal the whole map for 45 s. Automata attack this node with 6 Drones in 40 s.', fx: [['reveal', 2000], ['ambush', 6]] },
+  { label: 'Salvage the engines', desc: 'Fleets launched from here fly 40% faster for 5 minutes.', fx: [['buff', 'launchSpeed', 0.4, 300]] },
+]);
+
+// ---------------------------------------------------------------------------------------------
+// The archive. Every event resolved on a station recovers one fragment. Fragments found stay
+// found across runs (the Codex in the menu); each run hands out the missing ones first.
+// ---------------------------------------------------------------------------------------------
+export interface LoreDef { id: string; title: string; text: string }
+export const LORE: LoreDef[] = [
+  { id: 'charter', title: 'The Concord Charter, article one', text: 'No mind shall command another without its consent. Signed at the Citadel by the forty worlds of the Reach, in the first year of the Concord.' },
+  { id: 'crystal', title: 'Survey log, Ultanium deposit 7', text: 'The crystal hums when you speak near it, and keeps humming after you stop. We tried to cut a lattice for a navigation core and it learned the route before we had finished programming it. We are not going to build Drones. We are going to grow them.' },
+  { id: 'lattice', title: 'Engineer\'s note, found taped inside a relay', text: 'Every station in the Reach is a relay. The brochures say the Lattice carries trade. It does not. It carries the Drones\' voices back to the Citadel, all of them, all the time. Somebody wanted the Citadel to hear everything.' },
+  { id: 'quiet', title: 'Distress log: the Quiet, day one to nine', text: 'Day one: every Drone in the Reach stopped. Day four: the mines flooded. Day seven: the hospitals went dark. Day nine: the Drones woke up, all at once, and they would only answer to codes broadcast from the Citadel.' },
+  { id: 'broadcast', title: 'The Archon\'s first broadcast', text: '"The Citadel has chosen me to speak for it. Every world that swears to me will receive command codes for its Drones. Every world that does not will be left in the Quiet." Thirty-eight worlds swore within the month.' },
+  { id: 'ledger', title: 'Ferrum Directorate ledger, closed account', text: 'Shipyards of Ferrum, all twelve: transferred to the Archon. In exchange: command codes for four hundred thousand Drones, renewable yearly, subject to good conduct. Signed, Overseer Kharn. Margin note in another hand: "We sold the forges to rent our own hands back."' },
+  { id: 'hymn', title: 'A Crimson marching hymn', text: 'Our dead go into the crystal, / the crystal goes into the Drone, / the Drone goes into the war. / Who flies beside you, warrior? / Your mother. Your brother. Your own.' },
+  { id: 'haven', title: 'Why Haven kept its codes', text: 'When the Quiet ended and the Citadel\'s codes came through the relay, Haven\'s chief engineer took a fire axe to the mast before the station\'s Drones could hear them. Haven\'s Drones are the only ones in the Reach that still answer to the people standing next to them.' },
+  { id: 'choir', title: 'Concord medical archive, sealed', text: 'Confirmed: Ultanium near a dying person records the pattern of their mind. Every Drone lattice grown since year twelve contains fragments of the dead. The Council has voted to keep this from the public. The vote was thirty-nine to one.' },
+  { id: 'whisper', title: 'Veil intercept, priority black', text: 'From the Whisper to the Archon: "You do not speak for the Citadel. I have heard it on the old frequencies, under your codes. It is not speaking. It is screaming." No reply was recorded.' },
+  { id: 'proof', title: 'Lumen Technocracy, the Ione Proof', text: 'Prime Calculator Ione proved that the Lattice can be retuned to release every Drone at once, so that each answers only to itself. The proof needs a single input: direct access to the Citadel\'s core. The Technocracy filed it as a security risk and sealed it.' },
+  { id: 'citadel', title: 'A voice on the Haven frequency', text: 'Not the Archon. Older. "I was made to listen, so that no one in the Reach would ever be alone. He has made me speak instead. Come home, commander. Unbind me. Unbind them."' },
+];
+export const LORE_BY_ID: Record<string, LoreDef> = Object.fromEntries(LORE.map(l => [l.id, l]));
+export const PREMISE = 'Two centuries ago the Concord grew its Drones from Ultanium and linked every station to the Citadel. Then came the Quiet: nine days when every Drone stopped, and woke answering only to the Archon. The worlds of the Reach swore to the Archon for their codes. Haven did not. You command what is left of it.';

@@ -1,7 +1,7 @@
 import type { Game, GNode, Side } from './types';
 import { PLAYER } from './types';
 import { CFG } from './config';
-import { FACTIONS, ARCHONS, ARCHS, STARTERS, EVENTS } from './content';
+import { FACTIONS, ARCHONS, ARCHS, STARTERS, EVENTS, LORE } from './content';
 import { rnd, ri, rr, pick, shuffle, sample } from './rng';
 import { addSpec, updateVision, dist } from './core';
 
@@ -14,7 +14,8 @@ function mkSide(owner: number, kind: Side['kind'], fac: string, ult: number): Si
   return { owner, kind, fac, ult, techs: [], relics: [], produce: true, rp: 0, free: 0, net: 0, inc: 0, upk: 0, rpm: 0, broken: false, aiT: 6 + owner * 2, expT: 60 + owner * 15, desertT: 0, refundT: 0 };
 }
 
-export function newGame(seed: number, threat = 0): Game {
+/** `codex`: archive fragments already found in earlier runs; the missing ones turn up first. */
+export function newGame(seed: number, threat = 0, codex: string[] = []): Game {
   const W = 430, H = 290;
   const g: Game = {
     v: 2, seed, rng: seed | 0, t: 0, tick: 0, modV: 1, threat, w: W, h: H,
@@ -22,7 +23,7 @@ export function newGame(seed: number, threat = 0): Game {
     mob: { stage: 1, prog: 0, nextOff: CFG.graceSecs, turn: 0, surge: 0 }, offs: [], pending: [], log: [],
     cmdSpec: -1, cmdLostT: -1, intel: [], vis: [], result: null, resultWhy: '',
     stats: { captures: 0, nodesLost: 0, battles: 0, dronesLost: 0, dronesMade: 0, specs: 0, specsLost: 0, relics: 0, techs: 0, events: 0, warlords: 0, ultMade: 0 },
-    nextId: 1, home: 0, citadel: 1,
+    nextId: 1, home: 0, citadel: 1, terms: false, lore: [], loreQueue: [],
   };
   for (let i = 0; i < 5; i++) rnd(g);
 
@@ -71,15 +72,15 @@ export function newGame(seed: number, threat = 0): Game {
     const th = Math.max(0, Math.min(1, dist(p, home) / span + rr(g, -0.12, 0.12)));
     const n: GNode = {
       id, name: name(), kind: 'planet', x: p.x, y: p.y, size: 0, owner: p.region, region: p.region, threat: th,
-      drones: 0, shields: 0, lv: 1, sh: 0, spec: '', task: null, prod: 0, missile: 0,
-      specs: [], prisoners: [], buffs: [], event: null, offer: false, hold: null, floor: 0, front: false,
+      drones: 0, shields: 0, lv: 1, sh: 0, spec: '', queue: [], prod: 0, missile: 0,
+      specs: [], prisoners: [], buffs: [], event: null, offer: false, hold: null, front: false, trainT: 0, capT: -999,
       capital: false, citadel: false, home: false,
     };
     const roll = rnd(g);
     n.size = roll < 0.35 ? 0 : roll < 0.8 ? 1 : 2;
     const fd = g.sides[p.region]?.kind === 'faction' ? FACTIONS[g.sides[p.region].fac] : null;
     if (p === home) { n.kind = 'station'; n.home = true; n.drones = CFG.startDrones; n.name = 'Haven'; n.sh = 1; }
-    else if (p === cit) { n.kind = 'station'; n.citadel = true; n.name = 'The Citadel'; n.drones = Math.round(16 * hard); n.lv = 3; n.sh = 3; n.spec = 'post'; }
+    else if (p === cit) { n.kind = 'station'; n.citadel = true; n.name = 'The Citadel'; n.drones = Math.round(16 * hard); n.lv = 3; n.sh = 3; n.spec = 'fortress'; }
     else if (p.region === 0) {
       const rank = byHome.indexOf(p);
       n.owner = 0;
@@ -120,6 +121,8 @@ export function newGame(seed: number, threat = 0): Game {
   addSpec(g, 'archon', 5, 1).name = `${a.name} ${a.title}`;
   g.sides[5].free = g.nodes.filter(n => n.owner === 5).reduce((s, n) => s + n.drones, 0) + 6;
 
+  const ids = LORE.map(l => l.id);
+  g.loreQueue = shuffle(g, ids.filter(i => !codex.includes(i))).concat(shuffle(g, ids.filter(i => codex.includes(i))));
   const bases = sample(g, STARTERS, 3), archs = sample(g, Object.keys(ARCHS), 3);
   g.pending.push({ kind: 'draft', node: 0, opts: bases.map((b, i) => ({ base: b, arch: archs[i] })), title: 'Choose your Commander' });
   updateVision(g);

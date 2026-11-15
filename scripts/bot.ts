@@ -4,13 +4,14 @@ import { newGame } from '../src/sim/mapgen';
 import { step, exec } from '../src/sim/sim';
 import { PLAYER, type Game, type GNode } from '../src/sim/types';
 import { calcBattle, dist, viewOf, canTarget, slotsFree, floorOf, canUp, canCorridor, corridorPath, totalDrones, crewMax } from '../src/sim/core';
+import { commandOf } from '../src/sim/mods';
 
 function upgrades(g: Game, own: GNode[]) {
-  const labs = own.filter(n => n.spec === 'lab').length, supply = own.filter(n => n.spec === 'foundry').length;
+  const labs = own.filter(n => n.spec === 'lab').length, supply = own.filter(n => n.spec === 'habitat').length;
   for (const n of own) {
-    if (n.task) continue;
+    if (n.queue.length) continue;
     if (n.event && !g.pending.length) exec(g, { c: 'event', node: n.id });
-    const want = n.kind === 'planet' ? (labs < 2 ? 'lab' : supply < 2 ? 'foundry' : 'refinery') : (own.some(o => o.spec === 'bay') ? 'post' : 'bay');
+    const want = n.kind === 'planet' ? (labs < 2 ? 'lab' : supply < 2 ? 'habitat' : 'refinery') : (own.some(o => o.spec === 'bay') ? 'fortress' : 'bay');
     if (!n.spec && !canUp(g, n, 'spec', want)) { exec(g, { c: 'up', node: n.id, what: 'spec', id: want }); continue; }
     if (!canUp(g, n, 'lv')) { exec(g, { c: 'up', node: n.id, what: 'lv' }); continue; }
     if (g.sides[PLAYER].ult > 80 && !canUp(g, n, 'sh')) exec(g, { c: 'up', node: n.id, what: 'sh' });
@@ -26,7 +27,6 @@ function act(g: Game) {
   const cnt = (n: GNode) => n.specs.filter(i => i !== g.cmdSpec).length;
   const base = own.slice().sort((a, b) => cnt(b) - cnt(a) || b.drones - a.drones)[0];
   for (const n of own) if (n.front !== (n.id === base.id)) exec(g, { c: 'front', node: n.id });
-  const hf = 1 + 2 * g.mob.stage; if (g.nodes[g.home].owner === PLAYER && g.nodes[g.home].floor !== hf) exec(g, { c: 'floor', node: g.home, v: hf });
   if (g.tick % 60 === 0) exec(g, { c: 'rally', node: base.id });
   // bring stray specialists to the army
   for (const sp of g.specs) if (sp.owner === PLAYER && !sp.cmd && !sp.held && sp.node >= 0 && sp.node !== base.id && cnt(base) < 3) exec(g, { c: 'move', spec: sp.id, to: base.id });
@@ -43,9 +43,9 @@ function act(g: Game) {
   }
   if (!base.specs.length || slotsFree(g, base) < 1) return;
   if (cmd && cmd.node >= 0 && cmd.node !== g.home && g.nodes[g.home].owner === PLAYER && cnt(base) > 0) exec(g, { c: 'move', spec: cmd.id, to: g.home });
-  const others = base.specs.filter(i => i !== g.cmdSpec).sort((x, y) => +g.specs[x].up - +g.specs[y].up); // an un-upgraded specialist leads
+  const others = base.specs.filter(i => i !== g.cmdSpec).sort((x, y) => g.specs[y].lvl - g.specs[x].lvl); // the most experienced lead
   const crew = (others.length ? others : base.specs).slice(0, crewMax(g, base));
-  const avail = base.drones - Math.max(1, floorOf(g, base));
+  const avail = Math.min(base.drones - Math.max(1, floorOf(g, base)), commandOf(g, crew));
   let best: { t: GNode; need: number; sc: number } | null = null, unknown: GNode | null = null;
   for (const t of g.nodes) {
     if (t.owner === PLAYER || !canTarget(g, t)) continue;
@@ -87,7 +87,7 @@ for (let i = 0; i < runs; i++) {
   if (g.result === 'win') wins++;
   const s = g.sides[PLAYER];
   const f = g.factions.map(o => `${g.sides[o].fac}${g.sides[o].broken ? '!' : ''}:${g.nodes.filter(n => n.owner === o).length}`).join(' ');
-  console.log(`seed ${g.seed} ${g.result || 'timeout'} @${(g.t / 60).toFixed(1)}m stage ${g.mob.stage}+${g.mob.surge} nodes ${g.nodes.filter(n => n.owner === PLAYER).length}/${g.nodes.length} drones ${totalDrones(g, PLAYER)} net ${s.inc.toFixed(0)}-${s.upk.toFixed(0)} ult ${s.ult.toFixed(0)} caps ${g.stats.captures} lost ${g.stats.nodesLost} specs ${g.stats.specs} up ${g.specs.filter(x => x.owner === PLAYER && x.up).length} techs ${g.stats.techs} relics ${g.stats.relics} | ${f} | ${g.resultWhy}`);
+  console.log(`seed ${g.seed} ${g.result || 'timeout'} @${(g.t / 60).toFixed(1)}m stage ${g.mob.stage}+${g.mob.surge} nodes ${g.nodes.filter(n => n.owner === PLAYER).length}/${g.nodes.length} drones ${totalDrones(g, PLAYER)} net ${s.inc.toFixed(0)}-${s.upk.toFixed(0)} ult ${s.ult.toFixed(0)} caps ${g.stats.captures} lost ${g.stats.nodesLost} specs ${g.stats.specs} lv ${g.specs.filter(x => x.owner === PLAYER && !x.cmd).map(x => x.lvl).join('')} techs ${g.stats.techs} relics ${g.stats.relics} | ${f} | ${g.resultWhy}`);
 }
 if (runs) console.log(`${wins}/${runs} wins, ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 if (verbose) play(verbose, true);

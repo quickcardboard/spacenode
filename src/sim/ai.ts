@@ -2,19 +2,28 @@ import type { Game, GNode } from './types';
 import { PLAYER } from './types';
 import { CFG } from './config';
 import { FACTIONS, type FactionDef } from './content';
-import { sideMods } from './mods';
+import { sideMods, command } from './mods';
 import { rnd, rr, ri } from './rng';
-import { dist, log, sideName, canUp, startUp, launch, calcBattle, eta, grantTech, slotsFree, addSpec, fleetMods, fireMissile, canMissile } from './core';
+import { dist, log, sideName, canUp, startUp, launch, calcBattle, eta, grantTech, slotsFree, addSpec, fleetMods, fireMissile, canMissile, nodeMods, totalDrones, collapse, corridorsAt, crewMax } from './core';
 
-const ARCHON_AI: FactionDef['ai'] = { aggr: 1, expand: 1e9, react: 0.9, target: 'weak', shield: 3, planet: 'refinery', station: 'post' };
+const ARCHON_AI: FactionDef['ai'] = { aggr: 1, expand: 1e9, react: 0.9, target: 'weak', shield: 3, planet: 'refinery', station: 'fortress' };
 const aiOf = (g: Game, o: number) => (g.sides[o].kind === 'faction' ? FACTIONS[g.sides[o].fac].ai : ARCHON_AI);
-const strength = (g: Game, n: GNode) => calcBattle(g, 0, 0, [], n, {}).def;
+/** What the Coalition believes it would take to beat a node. An Illusionist makes it guess high. */
+const strength = (g: Game, n: GNode) => calcBattle(g, 0, 0, [], n, {}).def + (n.owner === PLAYER && nodeMods(g, n).mask ? 12 : 0);
+/** How much a player node is worth taking: specialists, the Commander, buildings, corridors, home. */
+function worth(g: Game, n: GNode): number {
+  return 2 + 3 * n.specs.length + (n.specs.includes(g.cmdSpec) ? 6 : 0) + (n.spec ? 2 : 0) + n.lv + 0.5 * n.sh + 1.5 * corridorsAt(g, n.id).length + (n.home ? 4 : 0) + (n.flagship ? 6 : 0) + (n.kind === 'station' ? 1 : 0);
+}
+const capCmd = (g: Game) => command(g, { def: 'captain' } as never, g.mob.stage);
 
-/** Coalition attacks are led by a Captain: a minor officer with Power 1 who can be captured and ransomed. */
+/** Coalition attacks are led by Captains, minor officers with Power 1 who can be captured and ransomed.
+ *  Each Captain commands a share of the fleet, so a big attack needs several. */
 function attack(g: Game, from: GNode, to: GNode, drones: number): boolean {
-  const cap = addSpec(g, 'captain', from.owner, from.id);
-  const err = launch(g, from, to, drones, [cap.id]);
-  if (err) { from.specs = from.specs.filter(i => i !== cap.id); cap.owner = -1; cap.node = -1; return false; }
+  const n = Math.max(1, Math.min(crewMax(g, from), Math.ceil(drones / capCmd(g))));
+  drones = Math.min(drones, n * capCmd(g));
+  const caps = Array.from({ length: n }, () => addSpec(g, 'captain', from.owner, from.id));
+  const err = launch(g, from, to, drones, caps.map(c => c.id));
+  if (err) { for (const cap of caps) { from.specs = from.specs.filter(i => i !== cap.id); cap.owner = -1; cap.node = -1; } return false; }
   return true;
 }
 
@@ -25,7 +34,7 @@ function think(g: Game, o: number) {
 
   // Upgrades: shields up to the faction's taste, then levels, then a specialty
   for (const n of own) {
-    if (n.task) continue;
+    if (n.queue.length) continue;
     if (n.spec === 'silo' && !n.missile && !canUp(g, n, 'missile')) { startUp(g, n, 'missile'); continue; }
     if (rnd(g) > 0.35) continue;
     if (n.sh < Math.min(3, ai.shield) && !canUp(g, n, 'sh')) startUp(g, n, 'sh');
@@ -52,6 +61,24 @@ function think(g: Game, o: number) {
     if (src) launch(g, src, thin, Math.min(4, Math.floor((src.drones - 5) / 2) + 1), []);
   }
 
+  // Counterattack: a node the player has just taken is thin and unshielded. Strike it if it can be won,
+  // at most once every few minutes per faction so it stays a threat and not a punishment.
+  if (side.kind === 'faction' && g.mob.stage >= 2 && g.t >= (side.counterT || 0)) {
+    let best: { src: GNode; tgt: GNode; need: number } | null = null;
+    for (const tgt of g.nodes) {
+      if (tgt.owner !== PLAYER || g.t - tgt.capT > CFG.counterWindow) continue;
+      const need = strength(g, tgt) + 2;
+      for (const src of own) {
+        if (slotsFree(g, src) < 1 || dist(src, tgt) > 160 || src.drones - 3 < need) continue;
+        if (!best || dist(src, tgt) < dist(best.src, best.tgt)) best = { src, tgt, need };
+      }
+    }
+    if (best && attack(g, best.src, best.tgt, Math.min(best.src.drones - 3, best.need + 2))) {
+      side.counterT = g.t + CFG.counterSecs;
+      log(g, `${sideName(g, o)} counterattacks ${best.tgt.name}`, 'warn', best.tgt.id);
+    }
+  }
+
   // Expand into neutral space
   if (g.t >= side.expT && side.kind === 'faction') {
     let best: { src: GNode; tgt: GNode; need: number; d: number } | null = null;
@@ -73,11 +100,12 @@ function plan(g: Game, o: number) {
   const ai = aiOf(g, o);
   const own = g.nodes.filter(n => n.owner === o), mine = g.nodes.filter(n => n.owner === PLAYER);
   if (!own.length || !mine.length) return;
+  // the best target is the one with the most worth per point of defence, not simply the weakest
   let best: GNode | null = null, bs = 1e9;
   for (const p of mine) {
-    const dmin = Math.min(...own.map(n => dist(n, p))), st = strength(g, p);
-    let sc = ai.target === 'weak' ? st * 10 + dmin * 0.5 : dmin + st * 4;
-    if (ai.target === 'spec') sc -= 50 * p.specs.length + (p.specs.includes(g.cmdSpec) ? 100 : 0);
+    if (g.offs.some(x => x.target === p.id)) continue; // another faction is already on it
+    const dmin = Math.min(...own.map(n => dist(n, p))), st = strength(g, p), w = Math.pow(worth(g, p) * (ai.target === 'spec' ? 1 + p.specs.length : 1), Math.min(1, g.mob.stage / 3)); // worth counts fully from stage 3
+    const sc = (st + 4) / w * (ai.target === 'near' ? 4 : 10) + dmin * (ai.target === 'near' ? 0.6 : 0.3);
     if (sc < bs) { bs = sc; best = p; }
   }
   if (!best) return;
@@ -140,7 +168,9 @@ function mobilize(g: Game) {
   if (g.t >= m.nextOff) {
     const cands = g.factions.filter(o => !g.sides[o].broken && g.nodes.some(n => n.owner === o));
     if (m.stage >= 4 || !cands.length) cands.push(g.archon);
-    plan(g, cands[m.turn % cands.length]);
+    // from stage 3 two sides strike at once, from stage 4 three: the player cannot answer them all with one army
+    const waves = Math.min(cands.length, m.stage >= 4 ? 3 : m.stage >= 3 ? 2 : 1);
+    for (let i = 0; i < waves; i++) plan(g, cands[(m.turn + i) % cands.length]);
     m.turn++;
     m.nextOff = g.t + (CFG.offInterval[m.stage] * rr(g, 0.85, 1.15)) / (1 + 0.04 * g.threat) / (1 + 0.15 * m.surge);
   }
@@ -150,8 +180,25 @@ function mobilize(g: Game) {
   }
 }
 
+/** A faction that has been beaten down gives up; once the whole Coalition is beaten, the Archon offers terms. */
+function morale(g: Game) {
+  const me = totalDrones(g, PLAYER);
+  if (g.t < 600 || me < 30) return;
+  for (const o of g.factions) {
+    const s = g.sides[o];
+    if (s.broken || !g.nodes.some(n => n.owner === o)) continue;
+    if (totalDrones(g, o) < CFG.surrender * me) collapse(g, o, `The ${sideName(g, o)} lays down its arms.`);
+  }
+  const coalition = [...g.factions, g.archon].reduce((t, o) => t + totalDrones(g, o), 0);
+  if (!g.terms && (g.factions.every(o => g.sides[o].broken) || coalition < CFG.terms * me)) {
+    g.terms = true;
+    g.pending.push({ kind: 'terms', node: g.citadel, opts: [0, 1], title: `${sideName(g, g.archon)} sues for peace` });
+  }
+}
+
 export function aiTick(g: Game) {
   mobilize(g);
+  if (g.tick % 50 === 0) morale(g);
   for (const o of [...g.factions, g.archon]) {
     const side = g.sides[o];
     if (g.t >= side.aiT) { side.aiT = g.t + 8 + rnd(g) * 4; think(g, o); }

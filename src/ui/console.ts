@@ -19,7 +19,7 @@ const HELP: Record<string, string> = {
   lvCost: 'Cost to reach level (-, -, 2, 3)', lvTime: 'Seconds per level upgrade', shCost: 'Cost to reach shield level (-, 1, 2, 3)', shTime: 'Seconds per shield upgrade',
   specCost: 'Specialty cost', specTime: 'Specialty build seconds', missileCost: 'Missile cost', missileTime: 'Missile build seconds', missileRange: 'Missile reach', missileKill: 'Drones a missile destroys', missileSpeed: 'Missile speed multiplier',
   prodSecs: 'Seconds per Drone by Barracks level (-, 1, 2, 3)', shieldPerLv: 'Shield per shield level', shieldRegenSecs: 'Seconds per shield point recharged',
-  slotsStation: 'Launch slots per station', slotsPlanet: 'Launch slots per planet', specSlots: 'Active specialists per node', crew: 'Specialists per fleet', baySpeed: 'Launch Bay speed bonus', bayCrew: 'Launch Bay extra crew',
+  slotsStation: 'Launch slots per station', slotsPlanet: 'Launch slots per planet', crew: 'Specialists per fleet', baySpeed: 'Launch Bay speed bonus', bayCrew: 'Launch Bay extra crew',
   rallyBatch: 'Spare Drones before a rally convoy leaves', fleetFov: 'Fleet vision: full intelligence, detection', fovInner: 'Node full-intelligence radius', fovOuter: 'Node detection radius',
   corridorCost: 'Corridor cost', corridorTime: 'Corridor build seconds', corridorRange: 'Corridor reach', corridorMax: 'Corridors per node', corridorSpeed: 'Convoy speed multiplier',
   rescueSecs: 'Commander rescue window', ransom: 'Ultanium per ransom', recruitCost: 'Cost to recruit a prisoner', rpBase: 'Research needed for the first choice', rpStep: 'Extra research per technology known',
@@ -103,7 +103,7 @@ export function initConsole(host: ConsoleHost) {
       case 'tech': if (TECHS[a[0]]) { grantTech(g, PLAYER, a[0]); say(`Granted ${TECHS[a[0]].name}`); } else say('Unknown technology'); break;
       case 'relic': if (RELICS[a[0]]) { side.relics.push(a[0]); g.modV++; say(`Relic ${RELICS[a[0]].name}`); } else say('Unknown relic'); break;
       case 'spec': { const at = sel >= 0 && g.nodes[sel].owner === PLAYER ? sel : g.home; if (SPECS[a[0]]) { addSpec(g, a[0], PLAYER, at); say(`${SPECS[a[0]].name} at ${g.nodes[at].name}`); } else say('Unknown specialist'); break; }
-      case 'upgrade': for (const sp of g.specs) if (sp.owner === PLAYER && !sp.cmd) sp.up = true; g.modV++; say('Every specialist upgraded'); break;
+      case 'upgrade': for (const sp of g.specs) if (sp.owner === PLAYER && !sp.cmd) { sp.lvl = 5; sp.xp = CFG.specXp[5]; } g.modV++; say('Every specialist is level 5'); break;
       case 'win': g.result = 'win'; g.resultWhy = 'Console.'; break;
       default: say('Unknown command. Type help.');
     }

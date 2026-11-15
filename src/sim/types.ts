@@ -4,7 +4,7 @@ export type Mods = Record<string, number>;
 export type Fx = any[]; // ['ult', 20] | ['relic','rare'] | ... see events in content.ts
 
 export interface Buff { k: string; v: number; until: number }
-export interface Task { kind: 'lv' | 'sh' | 'spec' | 'missile' | 'corridor'; id: string; left: number; total: number; cost: number }
+export interface Task { kind: 'lv' | 'sh' | 'spec' | 'missile' | 'corridor' | 'flagship'; id: string; left: number; total: number; cost: number }
 export interface Hold { until: number; total: number; need: number; fx: Fx[]; name: string }
 
 export interface GNode {
@@ -14,16 +14,18 @@ export interface GNode {
   drones: number; shields: number;
   lv: number; // planets: mine level; stations: barracks level (1..3)
   sh: number; // shield level (0..3)
-  spec: string; // specialty: '' | refinery | lab | foundry | silo | post | bay
-  task: Task | null; // one upgrade at a time
+  spec: string; // specialty: '' | refinery | lab | habitat | silo | fortress | bay
+  queue: Task[]; // build queue, paid when queued; the first job is the one in progress
   prod: number; // seconds of progress toward the next Drone (stations)
   missile: number; // missiles ready (silo)
-  specs: number[]; // specialists here; the first few (the slot count) are active, the rest are in reserve
+  specs: number[]; // specialists stationed here (no limit)
   prisoners: number[];
   buffs: Buff[];
   event: string | null; offer: boolean; hold: Hold | null;
-  floor: number; // Drones the player wants kept here when rallying
-  front: boolean; // front-line nodes never send their Drones away when you rally; supply nodes do
+  front: boolean; // a Bastion: never sends its Drones away when you rally (Supply nodes do)
+  trainT: number; // progress toward the next Drone trained by a specialist here
+  capT: number; // when this node last changed hands
+  flagship?: boolean; dest?: { x: number; y: number } | null; // the Flagship: a station that moves
   capital: boolean; citadel: boolean; home: boolean;
 }
 
@@ -36,6 +38,7 @@ export interface Fleet {
   lane?: boolean; path?: number[]; // corridor convoy and its remaining hops
   back?: boolean; probe?: boolean; missile?: boolean;
   off?: boolean; noticed?: boolean; speedUp?: number;
+  fight?: number; // seconds of battle left once it has engaged a hostile node
 }
 
 export interface Corridor { a: number; b: number; owner: number }
@@ -45,7 +48,7 @@ export interface Spec {
   node: number; fleet: number; // exactly one is >= 0 (both -1 when removed)
   held: number; // captor's owner id (or -1 for neutral captors), 0 when free
   cd: number; // time the specialist's charged effect is ready again
-  up: boolean; // upgraded form
+  lvl: number; xp: number; // level 1..5: Power at 2 and 4, upgraded form at 3, mastery at 5; command +4 per level
   cmd: null | { base: string; arch: string; lvl: number; xp: number; perks: string[] };
   name?: string;
 }
@@ -58,7 +61,7 @@ export interface Side {
   rp: number; // research points toward the next choice
   free: number; // reserve Drones that cost no upkeep (Coalition mobilization)
   net: number; inc: number; upk: number; rpm: number; // last computed income, upkeep and net per minute
-  broken: boolean; aiT: number; expT: number; desertT: number; refundT: number;
+  broken: boolean; aiT: number; expT: number; desertT: number; refundT: number; counterT?: number;
 }
 
 export interface Intel {
@@ -67,7 +70,7 @@ export interface Intel {
 }
 
 export interface Pending {
-  kind: 'draft' | 'spec' | 'relic' | 'event' | 'perk' | 'tech';
+  kind: 'draft' | 'spec' | 'relic' | 'event' | 'perk' | 'tech' | 'lore' | 'terms';
   node: number; opts: any[]; title: string; event?: string;
 }
 
@@ -88,6 +91,8 @@ export interface Game {
   result: null | 'win' | 'lose'; resultWhy: string;
   stats: Record<string, number>;
   nextId: number; home: number; citadel: number;
+  terms: boolean; // the Archon has offered terms (once per run)
+  lore: string[]; loreQueue: string[]; // archive fragments found this run, and the order the rest will turn up in
 }
 
 export const PLAYER = 1;

@@ -275,3 +275,23 @@ div.relic{background:var(--card2);border:2px solid;border-radius:12px;padding:8p
 @media (min-width:481px){#toasts{left:76px!important}}
 #roster.many .rost{padding:2px 1px}#roster.many .rost .tok.big{width:30px;height:30px;font-size:11px}#roster.many .rost small{max-height:10px;white-space:nowrap;text-overflow:ellipsis}
 .rost{gap:3px}.rost small{line-height:1.2;min-height:11px;max-height:22px;padding-bottom:1px}
+
+/* ---------------- levels, command, queue, archive ---------------- */
+.tok em{position:absolute;left:-5px;top:-5px;min-width:13px;height:13px;border-radius:7px;background:var(--gold);color:#1d2335;font-style:normal;font-size:8px;font-weight:900;display:grid;place-items:center;padding:0 2px;border:1px solid #1d2335}
+.tok.big em{min-width:15px;height:15px;font-size:9px}
+/* the roster scrolls up and down; a sideways pull picks a specialist up */
+#roster{overflow-x:hidden;overflow-y:auto;touch-action:pan-y;scrollbar-width:none;overscroll-behavior:contain;padding-bottom:6px}
+#roster::-webkit-scrollbar{display:none}
+.rost{touch-action:pan-y;flex:none}
+.queue .task.q{opacity:.75;border:1px dashed var(--line)}
+.btn.corrb{display:flex;flex-direction:column;align-items:flex-start;text-align:left;border-color:var(--me);margin:2px 0 6px;min-height:0;padding:6px 10px}
+.btn.corrb b{font-size:13px}.btn.corrb small{font-size:10px;color:var(--dim)}
+.flavour{font-style:italic;color:#d9d1bd;line-height:1.5}
+.title .flavour{max-width:520px;margin:4px auto 10px}
+.lore{background:var(--card);border-radius:12px;padding:8px 12px;margin-top:8px;border-left:3px solid var(--gold)}
+.lore small{font-size:9px;font-weight:800;color:var(--gold);letter-spacing:.08em}.lore b{display:block;margin:2px 0}.lore p{margin:4px 0 0;font-size:13px;line-height:1.5;color:#d9d1bd}
+.lore.locked{border-left-color:var(--line);opacity:.5}
+.modal.lorem{max-width:560px;text-align:left}.modal.lorem>small:first-child{font-size:10px;font-weight:800;color:var(--gold);letter-spacing:.08em}
+.modal.lorem .flavour{font-size:15px;margin:10px 0 16px}
+.goodp.small{font-size:11px}
+#roster{pointer-events:auto;width:max-content}

@@ -2,7 +2,7 @@ import type { Game, GNode, Fleet, Spec, Mods, Fx, Task } from './types';
 import { PLAYER } from './types';
 import { CFG, SPECIALTY } from './config';
 import { SPECS, POOL, RELICS, TECHS, PERKS, EVENTS, FACTIONS, ARCHONS } from './content';
-import { sideMods, locMods, power, specUpkeep, readyCharges, chargeCd } from './mods';
+import { sideMods, locMods, power, specUpkeep, readyCharges, chargeCd, commandOf } from './mods';
 import { rnd, pick, sample } from './rng';
 
 export const dist = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -28,7 +28,7 @@ export function sideColor(g: Game, o: number): string {
 
 // ---------------------------------------------------------------- specialists
 export function addSpec(g: Game, def: string, owner: number, nodeId: number): Spec {
-  const sp: Spec = { id: g.specs.length, def, owner, node: nodeId, fleet: -1, held: 0, cd: 0, up: false, cmd: null };
+  const sp: Spec = { id: g.specs.length, def, owner, node: nodeId, fleet: -1, held: 0, cd: 0, lvl: 1, xp: 0, cmd: null };
   g.specs.push(sp);
   g.nodes[nodeId].specs.push(sp.id);
   g.modV++;
@@ -47,19 +47,29 @@ export function toNode(g: Game, sp: Spec, n: GNode, prisonerOf = 0) {
 }
 export function toFleet(g: Game, sp: Spec, f: Fleet) { detach(g, sp); sp.fleet = f.id; f.specs.push(sp.id); g.modV++; }
 export function removeSpec(g: Game, sp: Spec) { detach(g, sp); sp.owner = -1; sp.held = 0; g.modV++; }
-export const slots = (g: Game, owner: number) => CFG.specSlots + (sideMods(g, owner).slots || 0);
-/** Active specialist places at a node (a Command Post has one more). */
-export const nodeSlots = (g: Game, n: { owner: number; spec?: string }) => slots(g, n.owner) + (n.spec === 'post' ? 1 : 0);
-export const activeSpecs = (g: Game, n: { owner: number; specs: number[]; spec?: string }) => n.specs.slice(0, nodeSlots(g, n));
+/** Every specialist stationed at a node works there: there is no limit. */
+export const activeSpecs = (_g: Game, n: { specs: number[] }) => n.specs;
 export const specName = (sp: Spec) => sp.name || SPECS[sp.def].name;
-export const nodeMods = (g: Game, n: { owner: number; specs: number[]; buffs: { k: string; v: number; until: number }[] }, on?: 'defend') => locMods(g, n.owner, activeSpecs(g, n), n.buffs, on);
-/** Move a reserve specialist into the active slots (the last active one drops to reserve). */
-export function promote(g: Game, sp: Spec): string | null {
-  if (sp.node < 0 || sp.held) return 'Not stationed at a node';
-  const n = g.nodes[sp.node];
-  n.specs = [sp.id, ...n.specs.filter(i => i !== sp.id)];
-  g.modV++;
-  return null;
+/** Node modifiers: side-wide ones, the specialists there, its buffs and its specialty. */
+export function nodeMods(g: Game, n: { owner: number; specs: number[]; buffs: { k: string; v: number; until: number }[]; spec?: string }, on?: 'defend'): Mods {
+  const m = locMods(g, n.owner, n.specs, n.buffs, on);
+  if (n.spec === 'fortress') { m.def = (m.def || 0) + CFG.fortressDef; m.regen = (m.regen || 0) + 1; }
+  return m;
+}
+/** Specialists earn experience in battle: five levels, announced as they come. */
+export function gainXp(g: Game, ids: number[], amount: number) {
+  for (const id of ids) {
+    const sp = g.specs[id];
+    if (!sp || sp.cmd || SPECS[sp.def].hidden || sp.owner < 0) continue;
+    sp.xp += amount * (1 + (sideMods(g, sp.owner).xp || 0));
+    while (sp.lvl < 5 && sp.xp >= CFG.specXp[sp.lvl + 1]) {
+      sp.lvl++; g.modV++;
+      if (sp.owner === PLAYER) {
+        const d = SPECS[sp.def], what = sp.lvl === 3 ? `upgraded, ${d.up.text}` : sp.lvl === 5 ? 'mastery, their passive counts twice' : 'Power +1';
+        log(g, `${specName(sp)} reached level ${sp.lvl}: ${what}; Command +${CFG.cmdPerLvl}`, 'good', sp.node);
+      }
+    }
+  }
 }
 export function homeOf(g: Game, owner: number): GNode | null {
   const own = g.nodes.filter(n => n.owner === owner);
@@ -101,7 +111,8 @@ export function economy(g: Game, owner: number): Econ {
   }
   for (const f of g.fleets) if (f.owner === owner) drones += f.drones;
   let specUp = 0;
-  for (const sp of g.specs) { if (sp.owner === owner && !sp.held) { if (!(sp.node >= 0 && g.nodes[sp.node].spec === 'post' && g.nodes[sp.node].owner === owner)) specUp += specUpkeep(g, sp); } else if (sp.held === owner && sm.prisonInc) inc += sm.prisonInc; }
+  for (const n of g.nodes) if (n.owner === owner && n.spec === 'habitat') free += CFG.habitatFree;
+  for (const sp of g.specs) { if (sp.owner === owner && !sp.held) specUp += specUpkeep(g, sp); else if (sp.held === owner && sm.prisonInc) inc += sm.prisonInc; }
   const paid = Math.max(0, drones - free);
   const upk = paid * CFG.upkeepDrone + specUp;
   return { inc, upk, net: inc - upk, drones, free, rpm, specUp };
@@ -127,7 +138,9 @@ export function updateVision(g: Game) {
     if (n.owner === PLAYER) v = 2;
     else {
       for (const p of eyes) { const d = dist(n, p.n); if (d <= p.r[0]) { v = 2; break; } if (d <= p.r[1]) v = 1; }
-      if (v < 2 && n.buffs.some(b => b.k === 'scan' && b.until > g.t)) v = 2;
+      const scanned = n.buffs.some(b => b.k === 'scan' && b.until > g.t);
+      if (v === 2 && !scanned && g.sides[n.owner] && nodeMods(g, n).mask) v = 1; // an Illusionist: seen, but not read
+      if (v < 2 && scanned) v = 2;
     }
     g.vis[n.id] = v;
     const it = g.intel[n.id];
@@ -164,43 +177,71 @@ export function aegis(g: Game, n: GNode): number {
   const layers = g.factions.filter(o => !g.sides[o].broken).length;
   return Math.round(layers * CFG.aegisPerLayer * (1 + (sideMods(g, g.archon).aegisPct || 0)));
 }
-export const slotsOf = (g: Game, n: GNode) => (n.kind === 'station' ? CFG.slotsStation : CFG.slotsPlanet) + (sideMods(g, n.owner).slotAdd || 0);
+export const slotsOf = (g: Game, n: GNode) => (n.kind === 'station' ? CFG.slotsStation : CFG.slotsPlanet) + (n.spec === 'bay' ? CFG.baySlots : 0) + (sideMods(g, n.owner).slotAdd || 0);
 export const slotsBusy = (g: Game, n: GNode) => g.fleets.filter(f => f.slot && f.home === n.id && f.owner === n.owner).length;
 export const slotsFree = (g: Game, n: GNode) => Math.max(0, slotsOf(g, n) - slotsBusy(g, n));
 export const crewMax = (g: Game, n: GNode) => CFG.crew + (sideMods(g, n.owner).slots || 0) + (n.spec === 'bay' ? CFG.bayCrew : 0);
 
-export type UpKind = 'lv' | 'sh' | 'spec' | 'missile';
+export type UpKind = 'lv' | 'sh' | 'spec' | 'missile' | 'flagship';
+export const queued = (n: GNode, kind: string) => n.queue.filter(t => t.kind === kind).length;
+/** The level a node will have once its queue is done. */
+export const lvAfter = (n: GNode, what: 'lv' | 'sh') => (what === 'lv' ? n.lv : n.sh) + queued(n, what);
 export function upCost(g: Game, n: GNode, what: UpKind): number {
-  const base = what === 'lv' ? CFG.lvCost[n.lv + 1] : what === 'sh' ? CFG.shCost[n.sh + 1] : what === 'spec' ? CFG.specCost : CFG.missileCost;
-  return what === 'missile' ? base : Math.max(5, base - (nodeMods(g, n).upgCost || 0));
+  if (what === 'missile') return CFG.missileCost;
+  if (what === 'flagship') return CFG.flagshipCost;
+  const base = what === 'lv' ? CFG.lvCost[lvAfter(n, 'lv') + 1] : what === 'sh' ? CFG.shCost[lvAfter(n, 'sh') + 1] : CFG.specCost;
+  return Math.max(5, base - (nodeMods(g, n).upgCost || 0));
 }
-export const upTime = (what: UpKind) => (what === 'lv' ? CFG.lvTime : what === 'sh' ? CFG.shTime : what === 'spec' ? CFG.specTime : CFG.missileTime);
+export const upTime = (what: UpKind) => (what === 'lv' ? CFG.lvTime : what === 'sh' ? CFG.shTime : what === 'spec' ? CFG.specTime : what === 'flagship' ? CFG.flagshipTime : CFG.missileTime);
+/** Is a Flagship built or on order anywhere for this owner? */
+export const hasFlagship = (g: Game, owner: number) => g.nodes.some(o => o.owner === owner && (o.flagship || o.queue.some(t => t.kind === 'flagship')));
 export function canUp(g: Game, n: GNode, what: UpKind, id = ''): string | null {
   const side = g.sides[n.owner];
   if (!side) return 'Not yours';
-  if (n.task) return 'Already upgrading';
-  if (what === 'lv' && n.lv >= 3) return 'Maximum level';
-  if (what === 'sh' && n.sh >= 3) return 'Maximum level';
-  if (what === 'spec') { if (n.spec) return 'Specialty already chosen'; if (!SPECIALTY[id] || SPECIALTY[id].on !== n.kind) return 'Not available here'; }
-  if (what === 'missile') { if (n.spec !== 'silo') return 'Needs a Missile Silo'; if (n.missile >= 1) return 'A missile is ready'; }
+  if (n.queue.length >= CFG.queueMax) return 'Build queue is full';
+  if ((what === 'lv' || what === 'sh') && lvAfter(n, what) >= 3) return 'Maximum level';
+  if (what === 'spec') { if (n.spec || queued(n, 'spec')) return 'Specialty already chosen'; if (n.flagship || n.citadel) return 'Not available here'; if (!SPECIALTY[id] || SPECIALTY[id].on !== n.kind) return 'Not available here'; }
+  if (what === 'missile') { if (n.spec !== 'silo') return 'Needs a Missile Silo'; if (n.missile >= 1 || queued(n, 'missile')) return 'A missile is ready'; }
+  if (what === 'flagship') { if (n.kind !== 'station' || n.flagship) return 'Only a station can build it'; if (hasFlagship(g, n.owner)) return 'You already have a Flagship'; }
   if (side.ult < upCost(g, n, what)) return 'Not enough Ultanium';
   return null;
 }
+/** Queue a job. It is paid now; jobs run one after another. */
 export function startUp(g: Game, n: GNode, what: UpKind, id = ''): string | null {
   const err = canUp(g, n, what, id);
   if (err) return err;
   const cost = upCost(g, n, what), t = upTime(what);
   g.sides[n.owner].ult -= cost;
-  n.task = { kind: what, id, left: t, total: t, cost };
+  n.queue.push({ kind: what, id, left: t, total: t, cost });
   return null;
 }
-export function cancelTask(g: Game, n: GNode) { if (!n.task) return; g.sides[n.owner].ult += n.task.cost; n.task = null; }
+/** Cancel a queued job and get its price back. Later jobs of the same kind are cancelled with it (they built on it). */
+export function cancelTask(g: Game, n: GNode, idx = 0) {
+  const t = n.queue[idx];
+  if (!t) return;
+  const drop = n.queue.filter((o, i) => i === idx || (i > idx && (t.kind === 'lv' || t.kind === 'sh' || t.kind === 'spec') && o.kind === t.kind));
+  for (const o of drop) if (g.sides[n.owner]) g.sides[n.owner].ult += o.cost;
+  n.queue = n.queue.filter(o => !drop.includes(o));
+}
+const FLAGSHIP_NAMES = ['Unbound', 'Axe of Haven', 'Defiance', 'Open Hand', 'Last Light'];
+/** Build the Flagship beside the station that made it. It joins the map as a new node. */
+function makeFlagship(g: Game, at: GNode) {
+  const a = rnd(g) * Math.PI * 2, x = Math.max(16, Math.min(g.w - 16, at.x + Math.cos(a) * 22)), y = Math.max(16, Math.min(g.h - 16, at.y + Math.sin(a) * 22));
+  const n: GNode = {
+    id: g.nodes.length, name: pick(g, FLAGSHIP_NAMES), kind: 'station', x, y, size: 1, owner: at.owner, region: at.owner, threat: at.threat,
+    drones: 0, shields: CFG.shieldPerLv, lv: 1, sh: 1, spec: '', queue: [], prod: 0, missile: 0, specs: [], prisoners: [], buffs: [],
+    event: null, offer: false, hold: null, front: false, trainT: 0, capT: g.t, flagship: true, dest: null, capital: false, citadel: false, home: false,
+  };
+  g.nodes.push(n); g.intel.push({ seen: 2, t: g.t, snap: null }); g.vis.push(2);
+  if (at.owner === PLAYER) log(g, `The Flagship ${n.name} is launched. Drag from it onto open space to move it.`, 'good', n.id);
+}
 function completeTask(g: Game, n: GNode, t: Task) {
   const mine = n.owner === PLAYER;
   if (t.kind === 'lv') { n.lv++; if (mine) log(g, `${n.name}: ${n.kind === 'planet' ? 'Mine' : 'Barracks'} level ${n.lv}`, 'info', n.id); }
   else if (t.kind === 'sh') { n.sh++; if (mine) log(g, `${n.name}: Shield level ${n.sh}`, 'info', n.id); }
   else if (t.kind === 'spec') { n.spec = t.id; if (mine) log(g, `${n.name} is now a ${SPECIALTY[t.id].name}`, 'info', n.id); }
   else if (t.kind === 'missile') { n.missile = 1; if (mine) log(g, `Missile ready at ${n.name}`, 'good', n.id); }
+  else if (t.kind === 'flagship') makeFlagship(g, n);
   else {
     const b = g.nodes[+t.id];
     if (b.owner === n.owner && !corridorBetween(g, n.id, b.id)) { g.corridors.push({ a: n.id, b: b.id, owner: n.owner }); if (mine) log(g, `Corridor open: ${n.name} to ${b.name}`, 'good', n.id); }
@@ -229,15 +270,17 @@ export function corridorPath(g: Game, a: number, b: number): number[] | null {
   return path;
 }
 export const corridorReach = (g: Game, a: number) => g.nodes.filter(n => n.id !== a && n.owner === g.nodes[a].owner && corridorPath(g, a, n.id)).map(n => n.id);
-const building = (g: Game, id: number) => g.nodes.filter(o => o.task && o.task.kind === 'corridor' && (o.id === id || +o.task.id === id)).length;
+const building = (g: Game, id: number) => g.nodes.reduce((k, o) => k + o.queue.filter(t => t.kind === 'corridor' && (o.id === id || +t.id === id)).length, 0);
+const corridorQueued = (a: GNode, b: GNode) => a.queue.some(t => t.kind === 'corridor' && +t.id === b.id) || b.queue.some(t => t.kind === 'corridor' && +t.id === a.id);
 export function canCorridor(g: Game, a: GNode, b: GNode): string | null {
   if (a.id === b.id) return 'Pick a different node';
   if (a.owner !== PLAYER || b.owner !== PLAYER) return 'Both ends must be your nodes';
-  if (dist(a, b) > CFG.corridorRange) return 'Too far';
-  if (corridorBetween(g, a.id, b.id) || (a.task?.kind === 'corridor' && +a.task.id === b.id) || (b.task?.kind === 'corridor' && +b.task.id === a.id)) return 'Already linked or being built';
+  if (a.flagship || b.flagship) return 'The Flagship cannot hold corridors';
+  if (dist(a, b) > CFG.corridorRange) return `Too far (corridors reach ${CFG.corridorRange})`;
+  if (corridorBetween(g, a.id, b.id) || corridorQueued(a, b)) return 'Already linked or being built';
   const mx = corridorMax(g);
   for (const n of [a, b]) if (corridorsAt(g, n.id).length + building(g, n.id) >= mx) return `${n.name} already has ${mx} corridors`;
-  if (a.task) return `${a.name} is busy upgrading`;
+  if (a.queue.length >= CFG.queueMax) return `${a.name}'s build queue is full`;
   if (g.sides[PLAYER].ult < corridorCost(g)) return 'Not enough Ultanium';
   return null;
 }
@@ -247,7 +290,7 @@ export function startCorridor(g: Game, a: GNode, b: GNode): string | null {
   const cost = corridorCost(g);
   g.sides[PLAYER].ult -= cost;
   const t = CFG.corridorTime / (1 + (nodeMods(g, a).build || 0));
-  a.task = { kind: 'corridor', id: String(b.id), left: t, total: t, cost };
+  a.queue.push({ kind: 'corridor', id: String(b.id), left: t, total: t, cost });
   return null;
 }
 
@@ -272,7 +315,7 @@ export function calcBattle(g: Game, owner: number, drones: number, crew: number[
   const surv = win ? Math.max(0, Math.min(d, atk - def + (f.surv || 0)) - (t.martyr || 0)) : 0;
   return { sent: drones, atk, def, win, surv, parts: { drones: d, pow, bonus, lance, strike, garr, shield, dpow, ddef, aegis: ae } };
 }
-function spend(g: Game, ids: number[], on: 'attack' | 'defend' | 'fall') { for (const sp of readyCharges(g, ids, on)) sp.cd = g.t + chargeCd(g, sp); }
+function spend(g: Game, ids: number[], on: 'attack' | 'defend' | 'fall' | 'fail') { for (const sp of readyCharges(g, ids, on)) sp.cd = g.t + chargeCd(g, sp); }
 
 /** Specialists on a fallen node or lost fleet: a ready Medic gets everyone home, otherwise they are taken prisoner. */
 function captureSpecs(g: Game, ids: number[], at: GNode, captor: number) {
@@ -300,10 +343,10 @@ function takeNode(g: Game, n: GNode, now: number, garrison: number) {
     g.corridors = g.corridors.filter(c => c.a !== n.id && c.b !== n.id);
     if (old === PLAYER) log(g, `Corridors to ${n.name} collapsed`, 'bad', n.id);
   }
-  for (const o of g.nodes) if (o.task?.kind === 'corridor' && +o.task.id === n.id) { if (g.sides[o.owner]) g.sides[o.owner].ult += o.task.cost; o.task = null; }
+  for (const o of g.nodes) for (const t of o.queue.filter(x => x.kind === 'corridor' && +x.id === n.id)) { if (g.sides[o.owner]) g.sides[o.owner].ult += t.cost; o.queue = o.queue.filter(x => x !== t); }
   if (old !== 0) captureSpecs(g, n.specs, n, now);
   for (const id of n.prisoners.slice()) { const sp = g.specs[id]; if (sp.owner === now) { toNode(g, sp, n); if (now === PLAYER) log(g, `${specName(sp)} was rescued at ${n.name}`, 'good', n.id); } else sp.held = now || -1; }
-  n.owner = now; n.drones = garrison; n.shields = 0; n.task = null; n.prod = 0; n.hold = null; n.buffs = []; n.front = false; n.floor = 0; n.missile = 0;
+  n.owner = now; n.drones = garrison; n.shields = 0; n.queue = []; n.prod = 0; n.hold = null; n.buffs = []; n.front = false; n.trainT = 0; n.missile = 0; n.capT = g.t; n.dest = null;
   if (now !== PLAYER) n.offer = false; // recruits do not wait around under Coalition rule
   g.modV++;
 }
@@ -311,15 +354,34 @@ function playerGains(g: Game, n: GNode) {
   if (n.offer) { n.offer = false; offerSpec(g, n.id); }
   if (n.event) g.pending.push({ kind: 'event', node: n.id, opts: [], title: EVENTS[n.event].name, event: n.event });
 }
-export function breakFaction(g: Game, owner: number, n: GNode) {
-  const side = g.sides[owner], f = FACTIONS[side.fac];
+/** A faction gives up: its nodes go neutral, its officers go home, and every specialist it held is set free. */
+export function collapse(g: Game, owner: number, why: string) {
+  const side = g.sides[owner];
+  if (!side || side.broken) return;
   side.broken = true;
   g.mob.stage = Math.max(1, g.mob.stage - 1); g.mob.prog = 0;
   g.offs = g.offs.filter(o => o.owner !== owner);
   for (const fl of g.fleets.filter(x => x.owner === owner)) loseFleet(g, fl, null, 0);
-  let k = 0;
-  for (const o of g.nodes) if (o.owner === owner) { takeNode(g, o, PLAYER, Math.ceil(o.drones / 3)); playerGains(g, o); k++; }
-  log(g, `${f.warlord} is your prisoner. The ${f.name} surrenders ${k} node${k === 1 ? '' : 's'} and a Citadel Aegis layer falls.`, 'good', n.id);
+  const home = homeOf(g, PLAYER);
+  let freed = 0, k = 0;
+  for (const sp of g.specs) {
+    if (sp.held !== owner) continue;
+    if (sp.owner === PLAYER && home) { toNode(g, sp, home); freed++; }
+    else removeSpec(g, sp);
+  }
+  for (const n of g.nodes) {
+    if (n.owner !== owner) continue;
+    for (const id of n.specs.slice()) removeSpec(g, g.specs[id]);
+    takeNode(g, n, 0, Math.ceil(n.drones / 2));
+    n.capital = false; k++;
+  }
+  log(g, `${why} ${k} of its node${k === 1 ? '' : 's'} go${k === 1 ? 'es' : ''} neutral${freed ? `, and ${freed} of your specialists come home` : ''}. A Citadel Aegis layer falls.`, 'good', home ? home.id : -1);
+  g.modV++;
+}
+/** Taking a faction's capital: the Warlord is yours, the faction collapses, and its signature specialist joins you. */
+export function breakFaction(g: Game, owner: number, n: GNode) {
+  const f = FACTIONS[g.sides[owner].fac];
+  collapse(g, owner, `${f.warlord} is your prisoner. The ${f.name} collapses:`);
   const sig = addSpec(g, f.sig, PLAYER, n.id);
   log(g, `${specName(sig)} joins you from the ${f.name}.`, 'good', n.id);
   offerRelic(g, 'rare', n.id);
@@ -332,7 +394,8 @@ function capture(g: Game, n: GNode, f: Fleet, r: Battle, fm: Mods) {
   if (fm.salvage && side) side.ult += Math.round(fm.salvage * n.drones);
   const wasCapital = n.capital && g.sides[old]?.kind === 'faction' && !g.sides[old].broken;
   takeNode(g, n, now, r.surv);
-  const crew = f.specs.slice(), leader = crew.length ? g.specs[crew[0]] : null;
+  const crew = f.specs.slice();
+  gainXp(g, crew, CFG.xpWin);
   for (const id of crew) { const sp = g.specs[id]; if (sp.def === 'captain') removeSpec(g, sp); else toNode(g, sp, n); }
   dropFleet(g, f);
   if (side) {
@@ -344,7 +407,6 @@ function capture(g: Game, n: GNode, f: Fleet, r: Battle, fm: Mods) {
   if (now === PLAYER) {
     g.stats.captures++; g.stats.dronesLost += r.sent - r.surv;
     log(g, `Captured ${n.name} with ${r.surv} Drones left`, 'good', n.id);
-    if (leader && !leader.cmd && !leader.up && leader.owner === PLAYER) { leader.up = true; g.modV++; log(g, `${specName(leader)} led the attack and is upgraded: ${SPECS[leader.def].up.text}`, 'good', n.id); }
     addXp(g, crew.includes(g.cmdSpec) ? 4 : 2);
     if (g.sides[old]) g.mob.prog = Math.max(0, g.mob.prog - CFG.captureSetback);
     if (wasCapital) breakFaction(g, old, n);
@@ -355,14 +417,23 @@ function capture(g: Game, n: GNode, f: Fleet, r: Battle, fm: Mods) {
 }
 function repel(g: Game, n: GNode, f: Fleet, r: Battle, fm: Mods) {
   const p = r.parts;
+  if (g.sides[n.owner]) gainXp(g, activeSpecs(g, n), CFG.xpDefend);
+  gainXp(g, f.specs, CFG.xpLose);
   n.drones = p.garr;
   let dmg = r.atk;
   const sl = Math.min(n.shields, Math.max(0, dmg - 0)); n.shields -= Math.min(sl, dmg); dmg -= p.shield;
   dmg -= p.dpow + p.ddef + p.aegis;
   n.drones -= Math.max(0, Math.min(n.drones, dmg));
-  if (f.owner === PLAYER) { log(g, `Attack on ${n.name} failed: ${r.atk} against ${r.def}`, 'bad', n.id); g.stats.dronesLost += f.drones; }
+  const rg = g.sides[f.owner] ? readyCharges(g, f.specs, 'fail')[0] : null;
+  const kept = rg ? Math.floor(p.drones / 2) : 0;
+  if (f.owner === PLAYER) { log(g, `Attack on ${n.name} failed: ${r.atk} against ${r.def}${rg ? `. ${specName(rg)} pulls ${kept} Drones out` : ''}`, 'bad', n.id); g.stats.dronesLost += f.drones - kept; }
   if (n.owner === PLAYER) log(g, `${n.name} held against ${sideName(g, f.owner)} (${r.atk} against ${r.def})`, 'good', n.id);
-  f.drones = 0;
+  f.drones = kept;
+  if (rg) { // the Rearguard covers the retreat: survivors and crew fly home
+    rg.cd = g.t + chargeCd(g, rg);
+    const origin = g.nodes[f.from], back = origin && origin.owner === f.owner ? origin : homeOf(g, f.owner);
+    if (back) { f.to = back.id; f.from = n.id; f.back = true; f.x = n.x; f.y = n.y; return; }
+  }
   if (n.owner === 0 && g.sides[f.owner]) { // beaten by a neutral node: the crew limps home
     const origin = g.nodes[f.from], back = origin && origin.owner === f.owner ? origin : homeOf(g, f.owner);
     if (back) { f.to = back.id; f.from = n.id; f.back = true; f.x = n.x; f.y = n.y; return; }
@@ -429,6 +500,7 @@ export function launch(g: Game, from: GNode, to: GNode, drones: number, specIds:
   const hostile = to.owner !== owner, probe = hostile && !specIds.length;
   if (probe && drones > 0) return 'An attack needs a specialist to lead it. Without one, send 0 Drones as a probe.';
   if (hostile && !probe && drones < 1) return 'An attack needs at least 1 Drone';
+  if (hostile && !probe && drones > commandOf(g, specIds)) return `This crew commands ${commandOf(g, specIds)} Drones. Add a specialist or send fewer.`;
   if (!hostile && !drones && !specIds.length) return 'Nothing to send';
   const crewMods = locMods(g, owner, specIds, []);
   const needsSlot = !crewMods.slotFree;
@@ -502,7 +574,8 @@ export function fireMissile(g: Game, from: GNode, to: GNode): string | null {
 }
 
 // ---------------------------------------------------------------- rally and reinforce
-export const floorOf = (g: Game, n: GNode) => Math.max(n.floor, workers(g, n));
+/** Drones a node always keeps: enough to work its mines and lab. */
+export const floorOf = (g: Game, n: GNode) => workers(g, n);
 /** Seconds until the soonest hostile fleet the player can see reaches this node, or -1. */
 export function incoming(g: Game, n: GNode): number {
   let best = -1;
@@ -655,6 +728,14 @@ export function choose(g: Game, idx: number): string | null {
     applyFx(g, n, c.fx);
     n.event = null; g.stats.events++;
     log(g, `${ev.name}: ${c.label}`, 'info', n.id);
+    if (n.kind === 'station') revealLore(g, n.id);
+    return null;
+  }
+  if (p.kind === 'lore') { g.pending.shift(); return null; }
+  if (p.kind === 'terms') {
+    g.pending.shift();
+    if (idx === 0) { g.result = 'win'; g.resultWhy = `Decisive victory. ${ARCHONS[g.sides[g.archon].fac].name} accepts your terms, and the Reach is free of the Coalition.`; }
+    else log(g, 'You refuse terms. The Citadel must fall.', 'warn', g.citadel);
     return null;
   }
   if (p.kind === 'spec' && idx < 0) { g.pending.shift(); return null; }
@@ -668,12 +749,19 @@ export function choose(g: Game, idx: number): string | null {
     offerSpec(g, g.home);
   } else if (p.kind === 'spec') {
     const n = g.nodes[p.node].owner === PLAYER ? g.nodes[p.node] : homeOf(g, PLAYER);
-    if (n) { const sp = addSpec(g, o, PLAYER, n.id); if (sideMods(g, PLAYER).recruitUp) sp.up = true; log(g, `${specName(sp)} joined at ${n.name}`, 'good', n.id); g.stats.specs++; }
+    if (n) { const sp = addSpec(g, o, PLAYER, n.id); if (sideMods(g, PLAYER).recruitUp) { sp.lvl = 3; sp.xp = CFG.specXp[3]; } log(g, `${specName(sp)} joined at ${n.name}`, 'good', n.id); g.stats.specs++; }
   } else if (p.kind === 'relic') { side.relics.push(o); g.stats.relics++; log(g, `Relic claimed: ${RELICS[o].name}`, 'good'); }
   else if (p.kind === 'perk') g.specs[g.cmdSpec].cmd!.perks.push(o);
   else if (p.kind === 'tech') grantTech(g, PLAYER, o);
   g.modV++;
   return null;
+}
+/** Recover the next archive fragment and show it. */
+export function revealLore(g: Game, nodeId: number) {
+  const id = g.loreQueue.find(l => !g.lore.includes(l));
+  if (!id) return;
+  g.lore.push(id);
+  g.pending.push({ kind: 'lore', node: nodeId, opts: [id], title: 'Archive fragment recovered' });
 }
 export function ransom(g: Game, sp: Spec, recruit: boolean): string | null {
   if (sp.held !== PLAYER || sp.node < 0) return 'Not your prisoner';
@@ -715,10 +803,18 @@ export function coreStep(g: Game) {
     if (n.shields < mx && !m.noRegen) n.shields = Math.min(mx, n.shields + (dt * (1 + (m.regen || 0))) / CFG.shieldRegenSecs);
     else if (n.shields > mx && !(m.capHold)) n.shields = Math.max(mx, n.shields - dt / 10);
     if (!side) continue;
-    if (n.task) { n.task.left -= dt * (1 + (m.build || 0)); if (n.task.left <= 0) { const t = n.task; n.task = null; completeTask(g, n, t); } }
-    if ((n.kind === 'station' || n.spec === 'foundry') && side.produce && canProduce(side)) {
-      n.prod += dt;
-      if (n.prod >= (n.kind === 'station' ? prodSecs(g, n, m) : CFG.foundrySecs)) { n.prod = 0; n.drones++; side.net -= CFG.upkeepDrone; side.upk += CFG.upkeepDrone; if (n.owner === PLAYER) g.stats.dronesMade++; }
+    const t = n.queue[0];
+    if (t) { t.left -= dt * (1 + (m.build || 0)); if (t.left <= 0) { n.queue.shift(); completeTask(g, n, t); } }
+    const make = () => { n.drones++; side.net -= CFG.upkeepDrone; side.upk += CFG.upkeepDrone; if (n.owner === PLAYER) g.stats.dronesMade++; };
+    if (side.produce && canProduce(side)) {
+      if (n.kind === 'station') { n.prod += dt; if (n.prod >= prodSecs(g, n, m)) { n.prod = 0; make(); } }
+      if (m.train) { n.trainT += (dt * m.train) / 60; if (n.trainT >= 1) { n.trainT -= 1; make(); } } // a Drill Sergeant trains them anywhere
+    }
+    if (n.dest) { // the Flagship under way
+      const d = dist(n, n.dest), st = CFG.flagshipSpeed * dt;
+      if (g.corridors.some(c => c.a === n.id || c.b === n.id)) g.corridors = g.corridors.filter(c => c.a !== n.id && c.b !== n.id);
+      if (d <= st) { n.x = n.dest.x; n.y = n.dest.y; n.dest = null; if (n.owner === PLAYER) log(g, `${n.name} has dropped anchor`, 'info', n.id); }
+      else { n.x += ((n.dest.x - n.x) / d) * st; n.y += ((n.dest.y - n.y) / d) * st; }
     }
     if (n.hold && g.t >= n.hold.until) {
       const h = n.hold; n.hold = null;
@@ -745,6 +841,18 @@ export function coreStep(g: Game) {
 
   for (const f of g.fleets.slice()) {
     const to = g.nodes[f.to], d = dist(f, to), step = fleetSpeed(g, f) * dt;
+    const hostile = !f.missile && !f.lane && !f.probe && f.drones > 0 && to.owner !== f.owner;
+    if (f.fight !== undefined) { // engaged: the battle plays out, then the outcome lands
+      if (!hostile) { delete f.fight; arrive(g, f); continue; }
+      f.fight -= dt;
+      if (f.fight <= 0) { delete f.fight; arrive(g, f); }
+      continue;
+    }
+    if (hostile && d <= step + CFG.engageDist) {
+      const k = Math.max(0, d - CFG.engageDist) / Math.max(d, 0.001);
+      f.x += (to.x - f.x) * k; f.y += (to.y - f.y) * k; f.fight = CFG.fightSecs;
+      continue;
+    }
     if (d <= step) arrive(g, f);
     else { f.x += ((to.x - f.x) / d) * step; f.y += ((to.y - f.y) / d) * step; }
   }
