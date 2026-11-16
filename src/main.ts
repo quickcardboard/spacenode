@@ -3,35 +3,38 @@ import { applyTuning, initConsole } from './ui/console';
 applyTuning(); // saved console edits apply before anything reads the balance tables
 import type { Game, GNode } from './sim/types';
 import { PLAYER } from './sim/types';
-import { CFG } from './sim/config';
+import { CFG, TIME_SCALE } from './sim/config';
 import { newGame } from './sim/mapgen';
-import { step, exec, type Cmd } from './sim/sim';
+import { step, exec, blocked, type Cmd } from './sim/sim';
 import { canTarget, fleetSeen, updateVision, route, canMissile, slotsFree, floorOf, crewMax, moveEta, activeSpecs, dist, launchSpeed, viewOf } from './sim/core';
-import { draw, nodeR, known, toScreen, nodeScreen, spots, edgeChips, TILT, type Cam } from './ui/render';
-import { hud, roster, panel, menu, modal, title, help, launchPreview, minToWin, launchMax, specTip, token, fmtT, type App } from './ui/ui';
+import { draw, nodeR, known, toScreen, nodeScreen, spots, edgeChips, nodeChips, TILT, type Cam } from './ui/render';
+import { hud, roster, panel, menu, modal, title, help, launchPreview, minToWin, launchMax, specTip, token, fmtT, logPanel, chipInfo, type App } from './ui/ui';
 import { play, unlock, isMuted, setMuted } from './ui/sound';
 
-const SAVE = 'spacenodes.save.v5', META = 'spacenodes.meta.v1';
+const SAVE = 'spacenodes.save.v6', META = 'spacenodes.meta.v1';
 const $ = (id: string) => document.getElementById(id)!;
 const canvas = $('map') as HTMLCanvasElement, ctx = canvas.getContext('2d')!;
+const elLog = document.createElement('div'); elLog.id = 'log'; document.body.appendChild(elLog);
 const elHud = $('hud'), elRoster = $('roster'), elPanel = $('panel'), elOverlay = $('overlay'), elToasts = $('toasts'), elTip = $('tip'), elGhost = $('ghost');
 const store = { get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } }, del: (k: string) => { try { localStorage.removeItem(k); } catch { /* storage unavailable */ } } };
 
 const app: App = {
   g: null, speed: 1, paused: false, sel: null, menu: null, mode: null, launch: null, drag: null, pickSpec: -1,
   screen: 'title', newThreat: 0, meta: { runs: 0, wins: 0, unlocked: 0, best: 0, codex: [], ...JSON.parse(store.get(META) || '{}') },
-  hasSave: !!store.get(SAVE),
+  hasSave: !!store.get(SAVE), decide: -1, logOpen: false,
 };
 const cam: Cam = { x: 100, y: 150, z: 7 };
 let camTo: { x: number; y: number } | null = null;
+let seenDecisions = 0;
 let W = 0, H = 0, hover = -1, dirty = true, lastLog = 0, sliding = false, helpFrom: App['screen'] = 'title', ended = false;
 const toasts: { msg: string; kind: string; node: number; until: number }[] = [];
-(window as any).__app = app; (window as any).__nodeScreen = (id: number) => nodeScreen(app.g!.nodes[id]); (window as any).__chips = edgeChips; // for automated checks // handy for debugging and automated checks
+(window as any).__app = app; (window as any).__nodeScreen = (id: number) => nodeScreen(app.g!.nodes[id]); (window as any).__chips = edgeChips; (window as any).__nodeChips = nodeChips; (window as any).__exec = (c: Cmd) => exec(app.g!, c); (window as any).__focus = (id: number) => select('node', id); (window as any).__advance = (secs: number) => { for (let i = 0; i < secs * 10; i++) step(app.g!); dirty = true; }; // for automated checks // handy for debugging and automated checks
 const tuning = initConsole({ game: () => app.g, selected: () => (app.sel?.type === 'node' ? app.sel.id : -1), setSpeed: n => { app.speed = n; dirty = true; }, refresh: () => { dirty = true; } });
 
 // ------------------------------------------------------------------ run lifecycle
 function startRun(g: Game) {
   app.g = g; app.screen = 'game'; app.sel = null; app.menu = null; app.mode = null; app.launch = null; app.drag = null; app.paused = false; app.speed = 1;
+  app.decide = -1; app.logOpen = W >= 820; seenDecisions = g.pending.length;
   const h = g.nodes[g.home];
   cam.x = h.x + 8; cam.y = h.y; cam.z = Math.max(6.5, Math.min(9, W / 52));
   lastLog = g.log.length; toasts.length = 0; dirty = true; ended = false;
@@ -65,7 +68,7 @@ function openLaunch(fromId: number, toId: number, lane: boolean) {
   const spare = Math.max(0, from.drones - floorOf(g, from));
   if (to.owner === PLAYER) L.drones = spare;
   else {
-    // crew defaults to the active specialists here; the Commander stays home unless you add them
+    // crew defaults to the active officers here; the Commander stays home unless you add them
     L.specs = activeSpecs(g, from).filter(i => i !== g.cmdSpec).slice(0, crewMax(g, from));
     const m = minToWin(g, L);
     L.drones = Math.min(launchMax(g, L), m ? m + 1 : spare);
@@ -92,7 +95,7 @@ function act(a: string) {
     case 'console': tuning.toggle(); break;
     case 'menu': app.menu = args[0] || null; break;
     case 'close': app.sel = null; app.launch = null; break;
-    case 'focus': app.menu = null; select('node', +args[0]); break;
+    case 'focus': app.menu = null; if (W < 820) app.logOpen = false; select('node', +args[0]); break;
     case 'cancelmode': app.mode = null; break;
     case 'up': run({ c: 'up', node: sel, what: args[0] as 'lv', id: args[1] }); break;
     case 'cancel': run({ c: 'cancel', node: sel, idx: +(args[0] || 0) }); break;
@@ -100,7 +103,14 @@ function act(a: string) {
     case 'event': run({ c: 'event', node: sel }); break;
     case 'ransom': run({ c: 'ransom', spec: +args[0], recruit: false }); break;
     case 'recruit': run({ c: 'ransom', spec: +args[0], recruit: true }); break;
-    case 'choose': run({ c: 'choose', idx: +args[0] }); break;
+    case 'choose': { // the open decision (or the opening Commander choice)
+      const draft = g!.pending.findIndex(p => p.kind === 'draft'), which = draft >= 0 ? draft : app.decide;
+      if (which >= 0 && run({ c: 'choose', idx: +args[0], which })) { app.decide = -1; seenDecisions = g!.pending.length; }
+      break;
+    }
+    case 'decide': app.decide = +args[0]; app.menu = null; { const p = g!.pending[app.decide]; if (p && p.node >= 0 && g!.nodes[p.node]) focus(p.node); } break;
+    case 'undecide': app.decide = -1; break;
+    case 'log': app.logOpen = !app.logOpen; break;
     case 'produce': run({ c: 'produce' }); break;
     case 'rally': run({ c: 'rally', node: sel }); break;
     case 'front': if (g!.nodes[sel].front !== (args[0] === '1')) run({ c: 'front', node: sel }); break;
@@ -158,11 +168,11 @@ document.addEventListener('keydown', e => {
   else if (e.key === '1') { app.speed = 1; dirty = true; } else if (e.key === '2') { app.speed = 2; dirty = true; } else if (e.key === '3') { app.speed = 4; dirty = true; }
   else if (e.key === 'm' || e.key === 'M') act(app.menu ? 'menu:' : 'menu:research');
   else if (e.key === 'h' || e.key === 'H') select('node', (app.g.nodes.find(n => n.owner === PLAYER && n.home) || app.g.nodes.find(n => n.owner === PLAYER) || app.g.nodes[0]).id);
-  else if (e.key === 'Escape') { if (app.mode) app.mode = null; else if (app.launch) app.launch = null; else if (app.menu) app.menu = null; else app.sel = null; dirty = true; }
+  else if (e.key === 'Escape') { if (app.decide >= 0) app.decide = -1; else if (app.mode) app.mode = null; else if (app.launch) app.launch = null; else if (app.menu) app.menu = null; else app.sel = null; dirty = true; }
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
 
-// ------------------------------------------------------------------ tooltips: any specialist token, anywhere
+// ------------------------------------------------------------------ tooltips: any officer token, anywhere
 const LONG_PRESS = 260;
 let tipFor = -1, tipHeld = false, pressT = 0, pressing = false;
 function showTip(spec: number, x: number, y: number) {
@@ -173,14 +183,24 @@ function showTip(spec: number, x: number, y: number) {
   elTip.style.left = `${Math.max(8, Math.min(W - r.width - 8, x - r.width / 2))}px`;
   elTip.style.top = `${y - r.height - 18 < 60 ? Math.min(H - r.height - 8, y + 26) : y - r.height - 18}px`;
 }
-function hideTip() { if (tipFor >= 0) { elTip.className = ''; tipFor = -1; } }
+function hideTip() { if (tipFor !== -1) { elTip.className = ''; tipFor = -1; } }
+/** A tooltip with any content (the chips under nodes). */
+function showInfo(html: string, x: number, y: number, key: number) {
+  if (tipFor !== key) { elTip.innerHTML = html; tipFor = key; }
+  elTip.className = 'open';
+  const r = elTip.getBoundingClientRect();
+  elTip.style.left = `${Math.max(8, Math.min(W - r.width - 8, x - r.width / 2))}px`;
+  elTip.style.top = `${y - r.height - 14 < 60 ? Math.min(H - r.height - 8, y + 18) : y - r.height - 14}px`;
+}
+/** The chip under a node at this point, if any. */
+function chipAt(px: number, py: number) { return nodeChips.find(c => px >= c.x && px <= c.x + c.w && py >= c.y && py <= c.y + c.h) || null; }
 const tipTarget = (t: EventTarget | null) => (t instanceof HTMLElement ? (t.closest('[data-tip]') as HTMLElement | null) : null);
 document.addEventListener('pointerover', e => { // hover (mouse)
   if (e.pointerType !== 'mouse' || e.target === canvas || rosterDown || ndrag) return;
   const el = tipTarget(e.target);
   if (el) { const r = el.getBoundingClientRect(); showTip(+el.dataset.tip!, r.left + r.width / 2, r.top); } else hideTip();
 });
-document.addEventListener('pointerdown', e => { // long press (touch) on any specialist token, in any panel
+document.addEventListener('pointerdown', e => { // long press (touch) on any officer token, in any panel
   clearTimeout(pressT); unlock();
   if (e.pointerType === 'mouse' || e.target === canvas) return;
   const el = tipTarget(e.target), x0 = e.clientX, y0 = e.clientY;
@@ -210,7 +230,7 @@ function spotAt(px: number, py: number) {
 }
 
 // ------------------------------------------------------------------ roster: tap to jump, drag onto a friendly node to send
-// The list scrolls up and down; pulling a portrait sideways (toward the map) picks the specialist up.
+// The list scrolls up and down; pulling a portrait sideways (toward the map) picks the officer up.
 let rosterDown: { spec: number; x: number; y: number; id: number; mouse: boolean } | null = null;
 elRoster.addEventListener('pointerdown', e => {
   const el = (e.target as HTMLElement).closest('.rost') as HTMLElement | null;
@@ -292,6 +312,8 @@ function edgeAt(px: number, py: number): number {
 let lastTap = { id: -1, t: 0 };
 function tap(px: number, py: number) {
   const g = app.g!;
+  const ch = !app.mode ? chipAt(px, py) : null;
+  if (ch) { showInfo(chipInfo(g, ch.node, ch.key), ch.x + ch.w / 2, ch.y, -1000 - ch.node * 31 - ch.key.length); tipHeld = true; return; } // a chip under a node: what it is, how long it lasts
   const hit = pick(px, py);
   if (app.mode) {
     if (!hit || hit.type !== 'node') return;
@@ -335,7 +357,8 @@ canvas.addEventListener('pointermove', e => {
   if (!p) {
     if (app.g && app.screen === 'game') {
       const s = e.pointerType === 'mouse' ? spotAt(e.clientX, e.clientY) : null;
-      if (s) showTip(s.spec, s.x, s.y); else hideTip();
+      const ch = e.pointerType === 'mouse' && !s ? chipAt(e.clientX, e.clientY) : null;
+      if (s) showTip(s.spec, s.x, s.y); else if (ch && app.g) showInfo(chipInfo(app.g, ch.node, ch.key), ch.x + ch.w / 2, ch.y, -1000 - ch.node * 31 - ch.key.length); else hideTip();
       const h = pick(e.clientX, e.clientY); hover = h && h.type === 'node' ? h.id : -1; canvas.style.cursor = h || s ? 'pointer' : 'grab';
     }
     return;
@@ -399,7 +422,8 @@ function setHtml(el: HTMLElement, key: string, html: string) {
 function refresh() {
   const g = app.g, now = performance.now();
   if (app.screen === 'title' || !g) {
-    for (const [el, k] of [[elHud, 'hud'], [elPanel, 'panel'], [elRoster, 'roster'], [elToasts, 'toasts']] as [HTMLElement, string][]) setHtml(el, k, '');
+    for (const [el, k] of [[elHud, 'hud'], [elPanel, 'panel'], [elRoster, 'roster'], [elToasts, 'toasts'], [elLog, 'log']] as [HTMLElement, string][]) setHtml(el, k, '');
+    elLog.className = '';
     elPanel.className = '';
     elOverlay.className = 'open clear'; setHtml(elOverlay, 'ov', app.screen === 'help' ? help() : title(app));
     return;
@@ -409,6 +433,11 @@ function refresh() {
     if (l.kind !== 'info') toasts.push({ msg: l.msg, kind: l.kind, node: l.node, until: now + (l.kind === 'bad' ? 9000 : 6000) });
     play(/reached level/.test(l.msg) ? 'level' : /^Captured|surrender|collapses|lays down/.test(l.msg) ? 'capture' : l.kind === 'bad' ? 'lost' : l.kind === 'warn' ? 'alert' : 'tap', l.kind === 'info' ? 0.5 : 1);
   }
+  if (g.pending.length > seenDecisions) play('tap'); // a new decision waits in the log
+  seenDecisions = g.pending.length;
+  if (app.decide >= g.pending.length) app.decide = -1;
+  setHtml(elLog, 'log', app.logOpen ? logPanel(app) : '');
+  elLog.className = (app.logOpen ? 'open' : '') + (app.sel || app.launch ? ' shift' : ''); // beside the node panel, not on top of it
   const fresh = g.lore.filter(id => !(app.meta.codex || []).includes(id)); // archive fragments are kept across runs
   if (fresh.length) { app.meta.codex = [...(app.meta.codex || []), ...fresh]; store.set(META, JSON.stringify(app.meta)); play('lore'); }
   if (g.log.length >= 150) lastLog = g.log.length;
@@ -418,7 +447,7 @@ function refresh() {
   if (pressing) return; // a finger is holding a token: leave the panels alone until it lifts
   if (!rosterDown) { setHtml(elRoster, 'roster', roster(app)); elRoster.className = g.specs.filter(x => x.owner === PLAYER).length * 66 > H - 80 ? 'many' : ''; }
   if (!sliding) { const p = panel(app); elPanel.className = p ? (app.launch ? 'open launch' : 'open') : ''; setHtml(elPanel, 'panel', p); }
-  const ov = app.screen === 'help' ? help() : g.result || g.pending.length ? modal(app) : app.menu ? menu(app) : '';
+  const ov = app.screen === 'help' ? help() : g.result || blocked(g) || app.decide >= 0 ? modal(app) : app.menu ? menu(app) : '';
   elOverlay.className = ov ? 'open' : '';
   setHtml(elOverlay, 'ov', ov);
 }
@@ -447,8 +476,8 @@ function frame(now: number) {
   prev = now;
   const g = app.g;
   if (g && app.screen === 'game') {
-    if (!app.paused && !app.menu && !g.result && !g.pending.length) {
-      acc += dt * app.speed;
+    if (!app.paused && !app.menu && !g.result && !blocked(g) && app.decide < 0) { // reading a decision pauses; nothing else does
+      acc += dt * app.speed * TIME_SCALE;
       let n = 0;
       while (acc >= CFG.dt && n++ < 40) { acc -= CFG.dt; if (!step(g)) { acc = 0; dirty = true; break; } }
       if (acc > 1) acc = 0;
@@ -457,7 +486,7 @@ function frame(now: number) {
     if (!ptrs.size && Math.abs(vel.x) + Math.abs(vel.y) > 0.01) { cam.x += vel.x; cam.y += vel.y; vel.x *= 0.9; vel.y *= 0.9; }
     const kx = (keys.has('arrowright') || keys.has('d') ? 1 : 0) - (keys.has('arrowleft') || keys.has('a') ? 1 : 0), ky = (keys.has('arrowdown') || keys.has('s') ? 1 : 0) - (keys.has('arrowup') || keys.has('w') ? 1 : 0);
     // desktop: push the mouse against a screen edge to scroll, like any RTS (not while it rests on the interface)
-    if (mouseIn && overMap && !ptrs.size && !app.drag && !app.menu && !g.pending.length && !document.getElementById('console')?.classList.contains('open')) {
+    if (mouseIn && overMap && !ptrs.size && !app.drag && !app.menu && app.decide < 0 && !document.getElementById('console')?.classList.contains('open')) {
       const ex = lastPtr.x < 8 ? -1 : lastPtr.x > W - 8 ? 1 : 0, ey = lastPtr.y < 8 ? -1 : lastPtr.y > H - 8 ? 1 : 0;
       if (ex || ey) { camTo = null; cam.x += (ex * 520 * dt) / cam.z; cam.y += (ey * 520 * dt) / (cam.z * TILT); }
     }

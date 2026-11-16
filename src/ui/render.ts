@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import type { Game, GNode, Fleet } from '../sim/types';
 import { PLAYER } from '../sim/types';
-import { radii, fleetRadii, sideColor, fleetSeen, canTarget, shieldMax, aegis, slotsOf, slotsBusy, activeSpecs, labRunning } from '../sim/core';
+import { radii, fleetRadii, sideColor, fleetSeen, canTarget, shieldMax, aegis, slotsOf, slotsBusy, activeSpecs, labRunning, goal, nodeMods } from '../sim/core';
 import { SPECS } from '../sim/content';
-import { level } from '../sim/mods';
+import { isUp } from '../sim/mods';
 import { play } from './sound';
 
 // 3D diorama renderer. Low-poly, flat-shaded models stand above a misty plane and are lit by one
@@ -19,10 +19,17 @@ export interface RenderUi {
   glow?: Set<number> | null; // nodes to highlight as valid picks
   edgeInfo?: ((id: number) => string) | null; // while aiming: chips at the screen edge for off-screen targets, with this second line
 }
-/** Screen positions of every visible specialist statue, refreshed each frame (for tooltips). */
+/** Screen positions of every visible officer statue, refreshed each frame (for tooltips). */
 export const spots: { x: number; y: number; r: number; spec: number }[] = [];
 /** Chips at the screen edge pointing at off-screen targets while you aim; drop on one to target that node. */
 export const edgeChips: { x: number; y: number; w: number; h: number; node: number }[] = [];
+/** The chips under nodes (buildings, effects, shield recharge, intent, sailing), refreshed each frame: tap one for details. */
+export const nodeChips: { x: number; y: number; w: number; h: number; node: number; key: string }[] = [];
+/** How each lasting effect is drawn under its node. */
+const FXD: Record<string, { icon: string; col: string }> = {
+  fx_breach: { icon: '⊘', col: '#e2604e' }, fx_shaken: { icon: '≋', col: '#d9a35a' }, fx_cutoff: { icon: '⊣', col: '#b39ad6' },
+  fx_grounded: { icon: '⇣', col: '#9aa3ad' }, fx_momentum: { icon: '»', col: '#7fb2dc' }, fx_fort: { icon: '▲', col: '#8fc79a' }, mask: { icon: '◌', col: '#b39ad6' },
+};
 
 const PITCH = (52 * Math.PI) / 180, FOV = 30;
 export const TILT = Math.sin(PITCH); // ground foreshortening, used by input for panning
@@ -234,7 +241,7 @@ function padPos(n: GNode, i: number): { x: number; y: number; z: number; a: numb
   return { x: Math.cos(a) * r * 2.3, y: r * 0.5 + r * 0.55 + 0.6, z: Math.sin(a) * r * 2.3, a };
 }
 
-/** A specialist statue on a hex plinth. Commanders wear a crown; upgraded specialists get a gold base. */
+/** A officer statue on a hex plinth. Commanders wear a crown; upgraded officers get a gold base. */
 function statue(color: string, cmd: boolean, scale = 1, up = false): THREE.Group {
   const p = new THREE.Group();
   p.add(mesh(new THREE.CylinderGeometry(1.0, 1.1, 0.35, 6), lam(up ? GOLD : '#e6dcc6'), 0, 0.17));
@@ -421,6 +428,13 @@ function icon(c: CanvasRenderingContext2D, id: string, x: number, y: number) {
   }
   c.restore();
 }
+/** A round chip for a timed effect: an icon, with a ring that drains as it runs out. */
+function fxChip(c: CanvasRenderingContext2D, glyph: string, col: string, x: number, y: number, frac: number) {
+  const cx = x + 11;
+  c.fillStyle = INK; c.beginPath(); c.arc(cx, y, 11, 0, 7); c.fill();
+  c.strokeStyle = col; c.lineWidth = 2.5; c.beginPath(); c.arc(cx, y, 9.5, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0, Math.min(1, frac))); c.stroke();
+  c.fillStyle = col; c.font = '800 11px system-ui'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(glyph, cx, y + 0.5);
+}
 /** A chip with an icon and level pips: what this node is, at a glance. */
 function chipLv(c: CanvasRenderingContext2D, id: string, lv: number, x: number, y: number, lit = false): number {
   const w = lv > 0 ? 40 : 22;
@@ -442,7 +456,7 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
   camera.lookAt(cam.x, 0, cam.y);
   camera.updateMatrixWorld();
   if (now - fogT > 350) { fogT = now; paintGround(g, now); }
-  spots.length = 0; edgeChips.length = 0;
+  spots.length = 0; edgeChips.length = 0; nodeChips.length = 0;
 
   // --- nodes: rebuild a model only when what the player can see of it changes
   for (const n of g.nodes) {
@@ -454,7 +468,7 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
     const head = n.queue[0], taskQ = n.owner === PLAYER && head ? Math.round((1 - head.left / head.total) * 24) : -1;
     const specs = k.tier === 'detected' ? [] : g.sides[view.owner] ? activeSpecs(g, view) : [];
     const lit = n.owner === PLAYER && n.spec === 'lab' && labRunning(g, n);
-    const sig = [k.tier, k.owner, view.lv, view.sh, view.spec, view.missile, ready, taskQ, specs.map(i => `${i}:${level(g, g.specs[i])}`).join('.'), lit, g.sides[view.owner] ? slotsOf(g, view) : 0].join('|');
+    const sig = [k.tier, k.owner, view.lv, view.sh, view.spec, view.missile, ready, taskQ, specs.map(i => `${i}:${isUp(g.specs[i]) ? 1 : 0}`).join('.'), lit, g.sides[view.owner] ? slotsOf(g, view) : 0].join('|');
     if (v && v.sig === sig) continue;
     if (v) dispose(v.grp);
     const built = buildNode(g, view, k.tier, k.owner, ready), r = nodeR(n);
@@ -463,7 +477,7 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
     shown.forEach((id, i) => { // up to two rows of five in front of the node
       const sp = g.specs[id], j = i % 5, inRow = i < 5 ? row : shown.length - 5;
       const x = (j - (inRow - 1) / 2) * gap, zz = r * 1.55 + 1.6 + (j % 2) * 0.4 + (i >= 5 ? 2.6 : 0);
-      const st = statue(id === g.cmdSpec ? GOLD : SPECS[sp.def].color, id === g.cmdSpec, 1, level(g, sp) >= 3); st.position.set(x, 0, zz); built.grp.add(st);
+      const st = statue(id === g.cmdSpec ? GOLD : SPECS[sp.def].color, id === g.cmdSpec, 1, isUp(sp)); st.position.set(x, 0, zz); built.grp.add(st);
       statues.push({ spec: id, x, z: zz });
     });
     built.grp.position.set(n.x, 0, n.y);
@@ -515,7 +529,7 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
     const sig = `${f.owner}|${f.lane ? 1 : 0}|${f.missile ? 1 : 0}|${crewIds.join('.')}`;
     let v = fleetViews.get(f.id);
     if (!v || v.sig !== sig) { if (v) dispose(v.grp); v = { sig, grp: fleetMesh(g, f, crewIds), statues: crewIds.slice() }; scene.add(v.grp); fleetViews.set(f.id, v); }
-    const to = g.nodes[f.to], model = v.grp.getObjectByName('model')!, sh = v.grp.getObjectByName('shadow')!;
+    const to = goal(g, f), model = v.grp.getObjectByName('model')!, sh = v.grp.getObjectByName('shadow')!;
     v.grp.position.set(f.x, 0, f.y); v.grp.rotation.y = -Math.atan2(to.y - f.y, to.x - f.x);
     model.position.y = f.lane ? 0.8 : f.missile ? 5 : 3.4 + 0.25 * Math.sin(now / 400 + f.id);
     if (f.lane) model.rotation.y = now / 300;
@@ -538,7 +552,7 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
   ctx.lineCap = 'round';
   for (const { f } of flying) {
     if (f.lane) continue;
-    const to = g.nodes[f.to], a = toScreen(f.x, f.y), b = toScreen(to.x, to.y), col = f.missile ? '#d2604a' : f.owner === 0 ? '#d9d9d9' : sideColor(g, f.owner);
+    const to = goal(g, f), a = toScreen(f.x, f.y), b = toScreen(to.x, to.y), col = f.missile ? '#d2604a' : f.owner === 0 ? '#d9d9d9' : sideColor(g, f.owner);
     ctx.strokeStyle = hexA(col, 0.8); ctx.lineWidth = 2.5; ctx.setLineDash([0.1, 9]); ctx.lineDashOffset = -now / 50;
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
   }
@@ -594,17 +608,32 @@ export function draw(ctx: CanvasRenderingContext2D, g: Game, ui: RenderUi, now: 
       ctx.fillStyle = hexA(PAPER, sil ? 0.45 : 0.85); ctx.fillText(n.name.toUpperCase(), gp.x, ny);
       ny += 17;
     }
-    // role chips: level, shield and specialty, readable without opening the panel
-    if (!sil && z > 3.2 && k.owner !== 0) {
-      const v = (k.tier === 'live' ? n : { ...n, ...g.intel[n.id].snap }) as GNode;
-      const wTot = 44 + (v.sh ? 44 : 0) + (v.spec ? 26 : 0) - 4;
+    // chips: buildings, then effects with draining rings, shield recharge, intent and sailing; every one can be tapped
+    if (!sil && z > 3.2) {
+      const v = (k.tier === 'live' ? n : { ...n, ...g.intel[n.id].snap }) as GNode, live = k.tier === 'live';
+      const row: { w: number; draw: (x: number) => void; key: string }[] = [];
+      const hit = (x: number, w: number, key: string) => nodeChips.push({ x, y: ny - 11, w, h: 22, node: n.id, key });
+      if (k.owner !== 0) row.push({ w: 40, key: 'lv', draw: x => chipLv(ctx, n.kind === 'planet' ? 'mine' : 'barracks', v.lv, x, ny) });
+      if (v.sh) row.push({ w: 40, key: 'sh', draw: x => chipLv(ctx, 'shield', v.sh, x, ny) });
+      if (v.spec && k.owner !== 0) row.push({ w: 22, key: 'spec', draw: x => chipLv(ctx, v.spec, 0, x, ny, (v.spec === 'lab' && n.owner === PLAYER && labRunning(g, n)) || (v.spec === 'silo' && v.missile > 0)) });
+      if (live) {
+        for (const b of n.buffs) {
+          const d = FXD[b.k];
+          if (!d || b.until <= g.t) continue;
+          const left = (b.until - g.t) / Math.max(1, b.until - (b.from ?? b.until - 60));
+          row.push({ w: 22, key: b.k, draw: x => fxChip(ctx, d.icon, d.col, x, ny, Math.min(1, left)) });
+        }
+        const mx = shieldMax(g, n) + aegis(g, n);
+        if (g.sides[n.owner] && n.shields < mx - 0.5 && (n.owner === PLAYER || !nodeMods(g, n).fx_breach)) row.push({ w: 22, key: 'regen', draw: x => fxChip(ctx, n.buffs.some(b => b.k === 'fx_breach' && b.until > g.t) ? '✕' : '↻', '#bfe3ff', x, ny, n.shields / Math.max(1, mx)) });
+        if (n.owner !== PLAYER && g.sides[n.owner] && (g.offs.some(o => o.staging === n.id) || n.queue.length || n.missile)) row.push({ w: 22, key: 'intent', draw: x => fxChip(ctx, g.offs.some(o => o.staging === n.id) ? '⚔' : n.missile ? '➹' : '▲', '#e8a85a', x, ny, 1) });
+        if (n.flagship) row.push({ w: 22, key: 'sail', draw: x => fxChip(ctx, '⛴', n.dest ? '#9fe0ff' : (n.anchorT || 0) > g.t ? '#e8bd55' : '#cfd6e6', x, ny, (n.sailT || 0) > g.t && !n.dest ? 1 - (n.sailT! - g.t) / 260 : 1) });
+      }
+      const wTot = row.reduce((t, c) => t + c.w + 4, 0) - 4;
       let x0 = gp.x - wTot / 2;
       ctx.globalAlpha = stale ? 0.65 : 1;
-      x0 += chipLv(ctx, n.kind === 'planet' ? 'mine' : 'barracks', v.lv, x0, ny);
-      if (v.sh) x0 += chipLv(ctx, 'shield', v.sh, x0, ny);
-      if (v.spec) chipLv(ctx, v.spec, 0, x0, ny, (v.spec === 'lab' && n.owner === PLAYER && labRunning(g, n)) || (v.spec === 'silo' && v.missile > 0));
+      for (const c of row) { c.draw(x0); hit(x0, c.w, c.key); x0 += c.w + 4; }
       ctx.globalAlpha = 1;
-    } else if (!sil && z > 3.2 && n.sh) { ctx.globalAlpha = stale ? 0.65 : 1; chipLv(ctx, 'shield', (k.tier === 'live' ? n.sh : g.intel[n.id].snap?.sh) || 0, gp.x - 20, ny); ctx.globalAlpha = 1; }
+    }
   }
   for (const { f, seen } of flying) {
     if (f.missile) continue;

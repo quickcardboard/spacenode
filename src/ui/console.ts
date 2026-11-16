@@ -14,12 +14,12 @@ const TBL = CFG as unknown as Record<string, unknown>;
 const HELP: Record<string, string> = {
   fleetSpeed: 'Map units per second', startUlt: 'Starting Ultanium', startDrones: 'Starting Drones', baseIncome: 'Free Ultanium per minute', freeBase: 'Drones that cost no upkeep',
   mineOut: 'Ultanium/min by mine level (0,1,2,3)', sizeMult: 'Planet size multiplier (small, medium, large)', refineryMult: 'Refinery output multiplier', labRp: 'Research per minute per Lab',
-  labWorkers: 'Extra Drones a Lab needs', supplyFree: 'Drones a Supply world feeds', upkeepDrone: 'Ultanium/min per Drone', upkeepPower: 'Ultanium/min per point of specialist Power',
+  labWorkers: 'Extra Drones a Lab needs', supplyFree: 'Drones a Supply world feeds', upkeepDrone: 'Ultanium/min per Drone', upXp: 'Experience to upgrade an officer',
   depotMult: 'Upkeep multiplier for Drones in a Depot', armyShare: 'Stations stop building when upkeep reaches this share of income', desertSecs: 'Seconds per deserting Drone when broke',
   lvCost: 'Cost to reach level (-, -, 2, 3)', lvTime: 'Seconds per level upgrade', shCost: 'Cost to reach shield level (-, 1, 2, 3)', shTime: 'Seconds per shield upgrade',
   specCost: 'Specialty cost', specTime: 'Specialty build seconds', missileCost: 'Missile cost', missileTime: 'Missile build seconds', missileRange: 'Missile reach', missileKill: 'Drones a missile destroys', missileSpeed: 'Missile speed multiplier',
   prodSecs: 'Seconds per Drone by Barracks level (-, 1, 2, 3)', shieldPerLv: 'Shield per shield level', shieldRegenSecs: 'Seconds per shield point recharged',
-  slotsStation: 'Launch slots per station', slotsPlanet: 'Launch slots per planet', crew: 'Specialists per fleet', baySpeed: 'Launch Bay speed bonus', bayCrew: 'Launch Bay extra crew',
+  slotsStation: 'Launch slots per station', slotsPlanet: 'Launch slots per planet', crew: 'Officers per fleet', sailCooldown: 'Flagship rest after anchoring (s)', anchorSecs: 'Flagship anchoring time (s)',
   rallyBatch: 'Spare Drones before a rally convoy leaves', fleetFov: 'Fleet vision: full intelligence, detection', fovInner: 'Node full-intelligence radius', fovOuter: 'Node detection radius',
   corridorCost: 'Corridor cost', corridorTime: 'Corridor build seconds', corridorRange: 'Corridor reach', corridorMax: 'Corridors per node', corridorSpeed: 'Convoy speed multiplier',
   rescueSecs: 'Commander rescue window', ransom: 'Ultanium per ransom', recruitCost: 'Cost to recruit a prisoner', rpBase: 'Research needed for the first choice', rpStep: 'Extra research per technology known',
@@ -87,7 +87,7 @@ export function initConsole(host: ConsoleHost) {
     const [c, ...a] = line.trim().split(/\s+/), g = host.game(), n = a[0] !== undefined ? Number(a[0]) : NaN, sel = host.selected();
     out.push(`> ${line}`);
     const say = (s: string) => out.push(s);
-    if (c === 'help' || !c) { say('ult N · drones N (selected node) · econ · reveal · stage N · mob 0-1 · rp N · tech ID · relic ID · spec ID · upgrade (all specialists) · win · speed N · list specs|relics|techs'); return; }
+    if (c === 'help' || !c) { say('ult N · drones N (selected node) · econ · reveal · stage N · mob 0-1 · rp N · tech ID · relic ID · spec ID · upgrade (all officers) · win · speed N · list specs|relics|techs'); return; }
     if (c === 'list') { say((a[0] === 'relics' ? Object.keys(RELICS) : a[0] === 'techs' ? Object.keys(TECHS) : Object.keys(SPECS)).join(' ')); return; }
     if (c === 'speed') { host.setSpeed(Math.max(1, Math.min(32, n || 1))); say(`speed ${n}x`); return; }
     if (!g) { say('Start a run first.'); return; }
@@ -95,15 +95,15 @@ export function initConsole(host: ConsoleHost) {
     switch (c) {
       case 'ult': side.ult += n || 0; say(`Ultanium ${Math.floor(side.ult)}`); break;
       case 'drones': if (sel < 0 || g.nodes[sel].owner !== PLAYER) say('Select one of your nodes first'); else { g.nodes[sel].drones += n || 0; say(`${g.nodes[sel].name}: ${g.nodes[sel].drones} Drones`); } break;
-      case 'econ': { const e = economy(g, PLAYER); say(`income ${e.inc.toFixed(1)} · upkeep ${e.upk.toFixed(1)} (specialists ${e.specUp.toFixed(1)}) · Drones ${e.drones}, ${e.free} free · research ${e.rpm.toFixed(1)}/min`); break; }
+      case 'econ': { const e = economy(g, PLAYER); say(`income ${e.inc.toFixed(1)} · upkeep ${e.upk.toFixed(1)} (officers ${e.specUp.toFixed(1)}) · Drones ${e.drones}, ${e.free} free · research ${e.rpm.toFixed(1)}/min`); break; }
       case 'reveal': for (const x of g.nodes) x.buffs.push({ k: 'scan', v: 1, until: g.t + 120 }); updateVision(g); say('Whole map identified for 2 minutes'); break;
       case 'stage': g.mob.stage = Math.max(1, Math.min(5, n || 1)); g.mob.prog = 0; say(`Mobilization stage ${g.mob.stage}`); break;
       case 'mob': g.mob.prog = Math.max(0, Math.min(0.99, n || 0)); say(`Mobilization progress ${g.mob.prog}`); break;
       case 'rp': side.rp += n || 0; say(`Research points ${side.rp.toFixed(0)}`); break;
       case 'tech': if (TECHS[a[0]]) { grantTech(g, PLAYER, a[0]); say(`Granted ${TECHS[a[0]].name}`); } else say('Unknown technology'); break;
       case 'relic': if (RELICS[a[0]]) { side.relics.push(a[0]); g.modV++; say(`Relic ${RELICS[a[0]].name}`); } else say('Unknown relic'); break;
-      case 'spec': { const at = sel >= 0 && g.nodes[sel].owner === PLAYER ? sel : g.home; if (SPECS[a[0]]) { addSpec(g, a[0], PLAYER, at); say(`${SPECS[a[0]].name} at ${g.nodes[at].name}`); } else say('Unknown specialist'); break; }
-      case 'upgrade': for (const sp of g.specs) if (sp.owner === PLAYER && !sp.cmd) { sp.lvl = 5; sp.xp = CFG.specXp[5]; } g.modV++; say('Every specialist is level 5'); break;
+      case 'spec': { const at = sel >= 0 && g.nodes[sel].owner === PLAYER ? sel : g.home; if (SPECS[a[0]]) { addSpec(g, a[0], PLAYER, at); say(`${SPECS[a[0]].name} at ${g.nodes[at].name}`); } else say('Unknown officer'); break; }
+      case 'upgrade': for (const sp of g.specs) if (sp.owner === PLAYER && !sp.cmd) { sp.lvl = 2; sp.xp = CFG.upXp; } g.modV++; say('Every officer is upgraded'); break;
       case 'win': g.result = 'win'; g.resultWhy = 'Console.'; break;
       default: say('Unknown command. Type help.');
     }

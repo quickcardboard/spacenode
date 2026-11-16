@@ -1,12 +1,14 @@
 import type { Game } from './types';
 import { PLAYER } from './types';
-import { coreStep, startUp, cancelTask, startCorridor, launch, convoy, moveSpec, fireMissile, choose, ransom, rally, type UpKind } from './core';
+import { coreStep, startUp, cancelTask, startCorridor, launch, convoy, moveSpec, fireMissile, choose, ransom, rally, sail, type UpKind } from './core';
 import { aiTick } from './ai';
 import { EVENTS } from './content';
 
-/** Advance one fixed step. Returns false while the game is waiting on a choice or is over. */
+/** The game waits only for the opening Commander choice; every other decision waits in the log. */
+export const blocked = (g: Game) => g.pending.some(p => p.kind === 'draft');
+/** Advance one fixed step. Returns false while the game is waiting on the Commander choice or is over. */
 export function step(g: Game): boolean {
-  if (g.result || g.pending.length) return false;
+  if (g.result || blocked(g)) return false;
   coreStep(g);
   if (!g.result) aiTick(g);
   return true;
@@ -24,7 +26,7 @@ export type Cmd =
   | { c: 'front'; node: number }
   | { c: 'sail'; node: number; x: number; y: number }
   | { c: 'produce' }
-  | { c: 'choose'; idx: number }
+  | { c: 'choose'; idx: number; which?: number }
   | { c: 'ransom'; spec: number; recruit: boolean }
   | { c: 'event'; node: number };
 
@@ -39,19 +41,14 @@ export function exec(g: Game, c: Cmd): string | null {
     case 'corridor': return g.nodes[c.from] && g.nodes[c.to] ? startCorridor(g, g.nodes[c.from], g.nodes[c.to]) : 'Unknown node';
     case 'launch': { const n = own(c.from); return n && g.nodes[c.to] ? launch(g, n, g.nodes[c.to], c.drones, c.specs) : 'Not your node'; }
     case 'convoy': { const n = own(c.from); return n && g.nodes[c.to] ? convoy(g, n, g.nodes[c.to], c.drones, c.specs) : 'Not your node'; }
-    case 'move': { const sp = mine(c.spec); return sp && g.nodes[c.to] ? moveSpec(g, sp, g.nodes[c.to]) : 'Not your specialist'; }
+    case 'move': { const sp = mine(c.spec); return sp && g.nodes[c.to] ? moveSpec(g, sp, g.nodes[c.to]) : 'Not your officer'; }
     case 'missile': { const n = own(c.from); return n && g.nodes[c.to] ? fireMissile(g, n, g.nodes[c.to]) : 'Not your node'; }
     case 'rally': { const n = own(c.node); return n ? rally(g, n) : 'Not your node'; }
     case 'front': { const n = own(c.node); if (!n) return 'Not your node'; n.front = !n.front; return null; }
-    case 'sail': {
-      const n = own(c.node);
-      if (!n || !n.flagship) return 'Only the Flagship can move';
-      n.dest = { x: Math.max(12, Math.min(g.w - 12, c.x)), y: Math.max(12, Math.min(g.h - 12, c.y)) };
-      return null;
-    }
+    case 'sail': { const n = own(c.node); return n ? sail(g, n, c.x, c.y) : 'Not your node'; }
     case 'produce': g.sides[PLAYER].produce = !g.sides[PLAYER].produce; return null;
-    case 'choose': return choose(g, c.idx);
+    case 'choose': return choose(g, c.idx, c.which || 0);
     case 'ransom': { const sp = g.specs[c.spec]; return sp ? ransom(g, sp, c.recruit) : 'Unknown prisoner'; }
-    case 'event': { const n = own(c.node); if (!n || !n.event) return 'No event here'; g.pending.push({ kind: 'event', node: n.id, opts: [], title: EVENTS[n.event].name, event: n.event }); return null; }
+    case 'event': { const n = own(c.node); if (!n || !n.event) return 'No event here'; if (!g.pending.some(p => p.kind === 'event' && p.node === n.id)) g.pending.push({ kind: 'event', node: n.id, opts: [], title: EVENTS[n.event].name, event: n.event, t: g.t }); return null; }
   }
 }

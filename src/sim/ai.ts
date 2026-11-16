@@ -1,7 +1,7 @@
 import type { Game, GNode } from './types';
 import { PLAYER } from './types';
 import { CFG } from './config';
-import { FACTIONS, type FactionDef } from './content';
+import { FACTIONS, SPECS, POOL, type FactionDef } from './content';
 import { sideMods, command } from './mods';
 import { rnd, rr, ri } from './rng';
 import { dist, log, sideName, canUp, startUp, launch, calcBattle, eta, grantTech, slotsFree, addSpec, fleetMods, fireMissile, canMissile, nodeMods, totalDrones, collapse, corridorsAt, crewMax } from './core';
@@ -10,7 +10,7 @@ const ARCHON_AI: FactionDef['ai'] = { aggr: 1, expand: 1e9, react: 0.9, target: 
 const aiOf = (g: Game, o: number) => (g.sides[o].kind === 'faction' ? FACTIONS[g.sides[o].fac].ai : ARCHON_AI);
 /** What the Coalition believes it would take to beat a node. An Illusionist makes it guess high. */
 const strength = (g: Game, n: GNode) => calcBattle(g, 0, 0, [], n, {}).def + (n.owner === PLAYER && nodeMods(g, n).mask ? 12 : 0);
-/** How much a player node is worth taking: specialists, the Commander, buildings, corridors, home. */
+/** How much a player node is worth taking: officers, the Commander, buildings, corridors, home. */
 function worth(g: Game, n: GNode): number {
   return 2 + 3 * n.specs.length + (n.specs.includes(g.cmdSpec) ? 6 : 0) + (n.spec ? 2 : 0) + n.lv + 0.5 * n.sh + 1.5 * corridorsAt(g, n.id).length + (n.home ? 4 : 0) + (n.flagship ? 6 : 0) + (n.kind === 'station' ? 1 : 0);
 }
@@ -61,12 +61,19 @@ function think(g: Game, o: number) {
     if (src) launch(g, src, thin, Math.min(4, Math.floor((src.drones - 5) / 2) + 1), []);
   }
 
+  // Kestrel and anyone else with a loaded silo: fire at the nearest player node in range
+  for (const n of own) {
+    if (n.spec !== 'silo' || !n.missile || g.mob.stage < 2 || g.t < (side.missileT || 0)) continue;
+    const tgt = g.nodes.filter(p => p.owner === PLAYER && !canMissile(g, n, p)).sort((a, b) => b.drones - a.drones)[0];
+    if (tgt && !fireMissile(g, n, tgt)) side.missileT = g.t + CFG.aiMissileSecs; // one missile per faction this often
+  }
+
   // Counterattack: a node the player has just taken is thin and unshielded. Strike it if it can be won,
   // at most once every few minutes per faction so it stays a threat and not a punishment.
   if (side.kind === 'faction' && g.mob.stage >= 2 && g.t >= (side.counterT || 0)) {
     let best: { src: GNode; tgt: GNode; need: number } | null = null;
     for (const tgt of g.nodes) {
-      if (tgt.owner !== PLAYER || g.t - tgt.capT > CFG.counterWindow) continue;
+      if (tgt.owner !== PLAYER || tgt.dest || g.t - tgt.capT > CFG.counterWindow) continue;
       const need = strength(g, tgt) + 2;
       for (const src of own) {
         if (slotsFree(g, src) < 1 || dist(src, tgt) > 160 || src.drones - 3 < need) continue;
@@ -103,7 +110,7 @@ function plan(g: Game, o: number) {
   // the best target is the one with the most worth per point of defence, not simply the weakest
   let best: GNode | null = null, bs = 1e9;
   for (const p of mine) {
-    if (g.offs.some(x => x.target === p.id)) continue; // another faction is already on it
+    if (g.offs.some(x => x.target === p.id) || p.dest) continue; // another faction is already on it, or it is under way
     const dmin = Math.min(...own.map(n => dist(n, p))), st = strength(g, p), w = Math.pow(worth(g, p) * (ai.target === 'spec' ? 1 + p.specs.length : 1), Math.min(1, g.mob.stage / 3)); // worth counts fully from stage 3
     const sc = (st + 4) / w * (ai.target === 'near' ? 4 : 10) + dmin * (ai.target === 'near' ? 0.6 : 0.3);
     if (sc < bs) { bs = sc; best = p; }
@@ -160,6 +167,10 @@ function mobilize(g: Game) {
         if (side.broken) continue;
         side.free += CFG.stageFree;
         if (side.kind !== 'faction') continue;
+        if (side.fac === 'tithe') { // the Tithe Compact hires a mercenary officer every stage
+          const cap = g.nodes.find(n => n.owner === o && n.capital) || g.nodes.find(n => n.owner === o);
+          if (cap) addSpec(g, POOL.filter(d => SPECS[d].rarity >= 1)[Math.floor(rnd(g) * POOL.filter(d => SPECS[d].rarity >= 1).length)], o, cap.id);
+        }
         const list = FACTIONS[side.fac].techs.filter(t => !side.techs.includes(t));
         for (const t of list.slice(0, side.fac === 'lumen' ? 2 : 1)) grantTech(g, o, t);
       }

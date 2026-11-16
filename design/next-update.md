@@ -1,5 +1,17 @@
 # SpaceNodes: the next update
 
+> **Status: built** (branch `claude/wonderful-mccarthy-rcqrvs`). Changes decided after this plan was written, and now in the game:
+> - Specialists are renamed **Officers**.
+> - Station specialties are **Fortress** (+4 shield, sight +40%), **Missile Silo** and **Flagship**. Barracks stays a building level, not a specialty.
+> - **Pirate:** stationed at a node, it launches by itself against enemy fleets passing within 40 (70 upgraded), with just enough Drones to win, and brings their officers home as prisoners. It never launches a fight it cannot win.
+> - **Nothing adds crew places.** Command Integration now gives the Commander +12 Command; Entourage and Fourth Chair are cut.
+> - **Commander identities:** one per synergy group (Siegebreaker, Tactician, Admiral, Pirate, Warden, Castellan, Engineer, Scout), drawn 3 at a time and paired with an archetype.
+> - **Warlords** are captured with their capital and can be **turned** (◆120, +30 per mobilization stage) or ransomed (◆40). Capturing the capital also grants that faction's relic.
+> - **Rarity affects offers:** Common 55%, Uncommon 30%, Rare 15%, plus 3% toward a Rare per offer without one. Duplicate officers are never allowed.
+> - **Experience:** upgrade at 10. A win gives 1, +2 if outnumbered, +1 per defending officer (max 2). A previewed "close" win is no longer rewarded, because previews make it riskless. Holding gives 1/2/3 by node worth, +2 if close.
+> - **Gunner:** 1 attacker lost per 5 Drones, 2 per 5 upgraded.
+> - **Game speed:** 25% faster at 1×.
+
 Everything we have agreed so far, for review before it is built. "Current build" means the branch `claude/wonderful-mccarthy-rcqrvs` as of the last push.
 
 Tags: **new** (not in the game), **changed** (in the game, works differently), **cut** (removed).

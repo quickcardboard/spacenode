@@ -20,15 +20,20 @@ export const CFG = {
   prodSecs: [0, 10, 7, 5], // seconds per Drone by Barracks level
   shieldPerLv: 2, shieldRegenSecs: 6,
   slotsStation: 2, slotsPlanet: 1, crew: 3, queueMax: 4,
-  baySpeed: 0.3, bayCrew: 1, baySlots: 1, fortressDef: 5,
+  fortressShield: 4, fortressFov: 0.4, flagshipCost: 120,
   // Command: an attacking fleet carries at most this many Drones per specialist aboard
   cmdBase: 8, cmdPerLvl: 4, cmdCommander: 12, captainCmd: 10, captainCmdStage: 5,
-  // Specialist experience: total needed for levels 2..5, and what each battle is worth
-  specXp: [0, 0, 5, 13, 24, 38], xpWin: 3, xpLose: 1, xpDefend: 2,
+  // Officer experience: earned only in battle, more for risky fights and for holding valuable nodes
+  upXp: 10, xpWin: 1, xpClose: 2, xpOdds: 2, closeBy: 3, xpHold: [1, 2, 3],
+  upkeepRarity: [1, 2, 3, 4], upkeepUp: 1, // officer upkeep per minute by rarity, and extra once upgraded
+  offerOdds: [55, 30, 15], offerPity: 3, // recruit card rarity odds in % (Common, Uncommon, Rare); Rare +3% per offer without one
+  skipUlt: 20, skipUltStage: 5, warlordCost: 120, warlordCostStage: 30, warlordRansom: 40,
+  // Lasting effects
+  jammerRange: 60, interceptSpeed: 1.6, interceptReach: 2,
   // Battles: a fleet engages from this far out and fights this long before the outcome lands
   engageDist: 13, fightSecs: 1.8,
-  // Flagship: a station you build that moves; specialists near it fight a level higher
-  flagshipCost: 150, flagshipTime: 90, flagshipSpeed: 0.45, flagshipAura: 90,
+  // Flagship: a station that sails; it anchors on arrival, then waits before it may sail again
+  flagshipSpeed: 0.45, anchorSecs: 20, sailCooldown: 240,
   rallyBatch: 4,
   // Vision
   fovInner: { planet: [42, 46, 52], station: 48 },
@@ -47,15 +52,19 @@ export const CFG = {
   offCommit: [0, 0.5, 0.6, 0.7, 0.8, 0.9], gatherSecs: 45,
   stageFree: 6, surgeFree: 12, // upkeep-free reserve Drones each faction gains per stage / per surge
   captureSetback: 0.15, aegisPerLayer: 5,
+  aiMissileSecs: 120, // a faction fires at most one missile this often (outside offensives)
   counterSecs: 150, counterWindow: 120, // a faction counterattacks a node you just took at most this often, within this long of the capture
   surrender: 0.3, terms: 0.25, // a faction gives up below this share of your strength; the Archon offers terms below this
 };
 
+/** The whole game runs this much faster than the simulation's own clock at 1× speed. */
+export const TIME_SCALE = 1.25;
+
 export const SPECIALTY: Record<string, { name: string; on: 'planet' | 'station'; desc: string }> = {
   refinery: { name: 'Refinery', on: 'planet', desc: 'Mine output +50%.' },
-  lab: { name: 'Lab', on: 'planet', desc: 'Adds research speed. Needs 2 Drones working.' },
-  habitat: { name: 'Habitat', on: 'planet', desc: '10 more of your Drones cost no upkeep, wherever they are.' },
-  silo: { name: 'Missile Silo', on: 'station', desc: 'Builds missiles. A missile wipes a node\'s shield and kills 6 Drones. No upkeep.' },
-  fortress: { name: 'Fortress', on: 'station', desc: '+5 defence here; shields recharge twice as fast.' },
-  bay: { name: 'Launch Bay', on: 'station', desc: 'One more launch slot; fleets from here fly 30% faster and carry one more specialist.' },
+  lab: { name: 'Lab', on: 'planet', desc: 'Research. Needs 2 Drones working.' },
+  habitat: { name: 'Habitat', on: 'planet', desc: '10 of your Drones cost no upkeep, anywhere.' },
+  fortress: { name: 'Fortress', on: 'station', desc: '+4 shield; sees 40% further.' },
+  silo: { name: 'Missile Silo', on: 'station', desc: 'Builds missiles. A missile Breaches the target and kills 6 Drones.' },
+  flagship: { name: 'Flagship', on: 'station', desc: 'This station becomes your Flagship and can sail. One per side.' },
 };

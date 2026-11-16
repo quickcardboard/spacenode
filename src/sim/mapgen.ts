@@ -1,7 +1,7 @@
 import type { Game, GNode, Side } from './types';
 import { PLAYER } from './types';
 import { CFG } from './config';
-import { FACTIONS, ARCHONS, ARCHS, STARTERS, EVENTS, LORE } from './content';
+import { FACTIONS, ARCHONS, ARCHS, STARTERS, EVENTS, LORE, WARLORD_OF } from './content';
 import { rnd, ri, rr, pick, shuffle, sample } from './rng';
 import { addSpec, updateVision, dist } from './core';
 
@@ -60,9 +60,14 @@ export function newGame(seed: number, threat = 0, codex: string[] = []): Game {
   const span = dist(home, cit), byHome = nearest(home, free());
   const names = new Set<string>();
   const name = () => { for (;;) { const s = pick(g, SYL_A) + pick(g, SYL_B); if (!names.has(s)) { names.add(s); return s; } } };
+  // archive events go to neutral stations, the fragments a player has not found yet first; other events go to planets
+  const ids = LORE.map(l => l.id);
+  g.loreQueue = shuffle(g, ids.filter(i => !codex.includes(i))).concat(shuffle(g, ids.filter(i => codex.includes(i))));
+  const archive = g.loreQueue.slice();
   let evList: string[] = [];
   const nextEvent = (kind: 'planet' | 'station') => {
-    if (!evList.length) evList = shuffle(g, Object.keys(EVENTS));
+    if (kind === 'station' && archive.length) return 'arc_' + archive.shift();
+    if (!evList.length) evList = shuffle(g, Object.keys(EVENTS).filter(e => !EVENTS[e].lore));
     const i = evList.findIndex(e => EVENTS[e].on === 'any' || EVENTS[e].on === kind);
     return i < 0 ? null : evList.splice(i, 1)[0];
   };
@@ -90,7 +95,7 @@ export function newGame(seed: number, threat = 0, codex: string[] = []): Game {
       n.drones = near ? ri(g, 0, 1) : Math.round((th * 8 * rr(g, 0.6, 1.3) + 1) * hard);
       n.sh = n.kind === 'planet' ? CFG.neutralShield[n.size] : 1;
       n.offer = n.kind === 'planet' || rnd(g) < 0.5; // every neutral planet and about half the neutral stations hold recruits
-      if (rank > 1 && (n.kind === 'station' ? rnd(g) < 0.85 : rnd(g) < 0.25)) n.event = nextEvent(n.kind);
+      if (rank > 1 && (n.kind === 'station' ? rnd(g) < 0.9 : rnd(g) < 0.25)) n.event = nextEvent(n.kind);
     } else {
       const capital = capitals.includes(p);
       n.capital = capital;
@@ -111,7 +116,7 @@ export function newGame(seed: number, threat = 0, codex: string[] = []): Game {
   for (const o of g.factions) {
     const f = FACTIONS[g.sides[o].fac], own = g.nodes.filter(n => n.owner === o), cap = own.find(n => n.capital)!;
     cap.name = f.name.split(' ')[0] + ' Prime';
-    addSpec(g, 'warlord', o, cap.id).name = f.warlord;
+    addSpec(g, WARLORD_OF[f.id], o, cap.id); // the Warlord: captured with the capital, turned for a price
     // the faction's specialists defend its capital and one outpost: the puzzle you must answer
     const spots = [cap, cap, shuffle(g, own.filter(n => !n.capital))[0] || cap];
     f.specs.forEach((d, i) => addSpec(g, d, o, spots[i].id));
@@ -121,8 +126,6 @@ export function newGame(seed: number, threat = 0, codex: string[] = []): Game {
   addSpec(g, 'archon', 5, 1).name = `${a.name} ${a.title}`;
   g.sides[5].free = g.nodes.filter(n => n.owner === 5).reduce((s, n) => s + n.drones, 0) + 6;
 
-  const ids = LORE.map(l => l.id);
-  g.loreQueue = shuffle(g, ids.filter(i => !codex.includes(i))).concat(shuffle(g, ids.filter(i => codex.includes(i))));
   const bases = sample(g, STARTERS, 3), archs = sample(g, Object.keys(ARCHS), 3);
   g.pending.push({ kind: 'draft', node: 0, opts: bases.map((b, i) => ({ base: b, arch: archs[i] })), title: 'Choose your Commander' });
   updateVision(g);
